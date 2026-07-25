@@ -1,0 +1,7 @@
+﻿Arm_Description,Rank_IC
+Arm 1: Pure 15m Baseline Rank IC,-0.04517643434413168
+Arm 2: Baseline + Real Chip Winner Rate Rank IC,-0.04228074651785052
+Arm 3: Baseline + Real Chip Cost Ratio Rank IC,-0.04485956682782242
+Arm 4: Chip Placebo (Randomized) Rank IC,-0.044973827530335166
+Real Chip Winner IC Increment,0.0028956878262811625
+Real Chip Cost Ratio IC Increment,0.00031686751630926463
