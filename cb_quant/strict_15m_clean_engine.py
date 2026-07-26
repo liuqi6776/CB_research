@@ -26,7 +26,7 @@ class CBStrict15mCleanEngine:
         df = df_mins.copy()
         df['trade_time'] = pd.to_datetime(df['trade_time'], errors='coerce', format='mixed')
         
-        # 1-A. 聚合为 15 分钟 K 线
+        # 1-A. 聚合为 15 分钟 K 线 (右端闭合时间：bar_end_time)
         df_15m = df.groupby(['ts_code', pd.Grouper(key='trade_time', freq='15min')]).agg({
             'open': 'first',
             'high': 'max',
@@ -37,8 +37,9 @@ class CBStrict15mCleanEngine:
         }).dropna(subset=['close']).reset_index()
 
         df_15m = df_15m.sort_values(by=['ts_code', 'trade_time']).reset_index(drop=True)
-        df_15m['date_str'] = df_15m['trade_time'].dt.strftime('%Y%m%d')
-        df_15m['time_str'] = df_15m['trade_time'].dt.strftime('%H:%M')
+        df_15m['bar_end_time'] = df_15m['trade_time'] + pd.Timedelta(minutes=15)
+        df_15m['date_str'] = df_15m['bar_end_time'].dt.strftime('%Y%m%d')
+        df_15m['time_str'] = df_15m['bar_end_time'].dt.strftime('%H:%M')
 
         # 1-B. 同 Session 信号窗口 (09:45~10:30 为上午，13:00~14:00 为下午)
         # 上午 10:30 的信号将在 10:45 入场，11:30 平仓（同一上午 Session，无午休跨越）

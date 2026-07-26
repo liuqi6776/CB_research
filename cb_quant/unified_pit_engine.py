@@ -107,12 +107,13 @@ class CBUnifiedPITEngine:
         raw_amt = pd.to_numeric(df['issue_size'], errors='coerce') if 'issue_size' in df.columns else pd.Series(np.nan, index=df.index)
         df['curr_iss_amt'] = np.where(raw_amt.notnull() & (raw_amt > 10000.0), raw_amt / 1e8, raw_amt)
 
-        # 5. 三级统一资格状态机定义
+        # 5. 三级统一资格状态机定义 (机构级零缺省)
         # Tier 1: T-1 日频选债资格 (is_eligible_at_selection)
-        # 必须满足: 双低/规模/强赎元数据完整, close <= 130, 规模 >= 2.0 亿, 未强赎
+        # 必须满足: 双低/规模/强赎元数据完整 (has_valid_call_metadata==True), close <= 130, 规模 >= 2.0 亿, 未强赎
         df['is_eligible_at_selection'] = (
             df['double_low'].notnull() &
             df['curr_iss_amt'].notnull() &
+            (df.get('has_valid_call_metadata', True) == True) &
             (df['close'] <= 130.0) &
             (df['close'] >= 95.0) &
             (df['curr_iss_amt'] >= 2.0) &
