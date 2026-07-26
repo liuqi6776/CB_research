@@ -34,14 +34,23 @@ def main():
     # 3. 运行时间结构路由器 (生成完整时间戳订单: feature_date < trade_date 且 signal_time < execution_time)
     df_orders, target_basket = CBTimeStructuredRouter.generate_time_structured_orders(df_pit)
     
-    # 4. 统计 10 级全诊断流向数据 (Diagnostic Pipeline Breakdown)
+    # 4. 逐字段 PIT 覆盖率诊断 (Per-Field PIT Coverage Breakdown)
+    total_rows = len(df_pit)
+    stk_t1_cov = df_pit['stk_close_t1'].notnull().mean() * 100
+    conv_px_cov = df_pit['conv_price'].notnull().mean() * 100
+    conv_val_cov = df_pit['conv_value_t1'].notnull().mean() * 100
+    iss_amt_cov = df_pit['curr_iss_amt'].notnull().mean() * 100
+    redeem_cov = df_pit['is_redeemed'].notnull().mean() * 100
+    eligible_ratio = df_pit['is_eligible_at_selection'].mean() * 100
+
+    # 5. 统计 10 级全诊断流向数据 (Diagnostic Pipeline Breakdown)
     unique_dates = sorted(df_pit['date_str'].unique())
     diag_rows = []
     
     for d_str in unique_dates:
         df_d = df_pit[df_pit['date_str'] == d_str]
         raw_bonds = df_d['ts_code'].nunique()
-        pit_complete = df_d[df_d['double_low'].notnull() & df_d['curr_iss_amt'].notnull()]['ts_code'].nunique()
+        pit_complete = df_d[df_d['conv_value_t1'].notnull() & df_d['curr_iss_amt'].notnull()]['ts_code'].nunique()
         eligible_bonds = df_d[df_d['is_eligible_at_selection'] == True]['ts_code'].nunique()
         top_n = target_basket[target_basket['trade_date'] == d_str]['ts_code'].nunique() if not target_basket.empty else 0
         signals = df_d[df_d['is_executable_at_signal'] == True]['ts_code'].nunique()
@@ -60,7 +69,15 @@ def main():
     df_diag = pd.DataFrame(diag_rows)
     df_diag.to_csv("strict_pipeline_diagnostics.csv", index=False, encoding="utf-8-sig")
 
-    # 5. 组合模拟 (持仓 5 个交易日，扣除 20bp 摩擦，库存绝对守恒)
+    # 6. 审计熔断检查：零 PIT、零 eligible、零订单时直接报错退出！
+    if df_pit['conv_value_t1'].notnull().sum() == 0:
+        raise RuntimeError("【审计熔断触发】PIT 覆盖率为 0，禁止输出平坦 NAV 假结论！")
+    if df_pit['is_eligible_at_selection'].sum() == 0:
+        raise RuntimeError("【审计熔断触发】T-1 选债合格标的数为 0，禁止输出平坦 NAV 假结论！")
+    if df_orders.empty:
+        raise RuntimeError("【审计熔断触发】生成的时间结构订单数为 0，禁止输出平坦 NAV 假结论！")
+
+    # 7. 组合模拟 (持仓 5 个交易日，扣除 20bp 摩擦，库存绝对守恒)
     capital = 1000000.0
     positions = {}
     trade_logs = []
@@ -145,7 +162,11 @@ def main():
     # 绩效计算
     total_ret = (df_nav['nav'].iloc[-1] / 1000000.0) - 1.0
     ann_ret = (1.0 + total_ret) ** (252.0 / len(df_nav)) - 1.0
+    sharpe = (df_nav['nav'].pct_change().fillna(0.0).mean() / (df_nav['nav'].pct_change().fillna(0.0).std() + 1e-8)) * np.sqrt(252.0)
     
+    cum_max = df_nav['nav'].cummax()
+    max_dd = ((df_nav['nav'] - cum_max) / cum_max).min()
+
     sells = df_trades[df_trades['side'] == 'SELL'] if not df_trades.empty and 'side' in df_trades.columns else pd.DataFrame()
     win_rate = (sells['net_pnl'] > 0).mean() if not sells.empty else 0.0
 
@@ -155,6 +176,14 @@ def main():
     print("时间结构对齐:       feature_date (T-1) < trade_date (T)")
     print("盘中时间戳结构:     signal_time (09:45) < execution_time (10:00)")
     print("零缺省放行规则:     彻底删除所有 .fillna 补齐，缺失直接过滤！")
+    print("-" * 75)
+    print("【逐字段 PIT 覆盖率统计 (Per-Field PIT Coverage)】")
+    print("  - 正股 T-1 收盘价 (stk_close_t1): {:.1f}% ({:,} 行)".format(stk_t1_cov, df_pit['stk_close_t1'].notnull().sum()))
+    print("  - 转股价 (conv_price):            {:.1f}% ({:,} 行)".format(conv_px_cov, df_pit['conv_price'].notnull().sum()))
+    print("  - T-1 转股价值 (conv_value_t1):   {:.1f}% ({:,} 行)".format(conv_val_cov, df_pit['conv_value_t1'].notnull().sum()))
+    print("  - 发行规模 (curr_iss_amt):        {:.1f}% ({:,} 行)".format(iss_amt_cov, df_pit['curr_iss_amt'].notnull().sum()))
+    print("  - 强赎状态 (is_redeemed):         {:.1f}% ({:,} 行)".format(redeem_cov, df_pit['is_redeemed'].notnull().sum()))
+    print("  - T-1 选债合格率 (is_eligible):   {:.1f}% ({:,} 行)".format(eligible_ratio, df_pit['is_eligible_at_selection'].sum()))
     print("-" * 75)
     print("【10 级全诊断管道汇总统计 (日均)】")
     print("  - 每日原始债池数量:             {:.1f} 只".format(df_diag['raw_bonds'].mean()))
@@ -170,6 +199,8 @@ def main():
     print("  - 最终资金:                     {:,.2f} 元".format(df_nav['nav'].iloc[-1]))
     print("  - 累计净收益率:                 {:+.2f}%".format(total_ret * 100))
     print("  - 年化收益率 (Annualized Return):{:+.2f}%".format(ann_ret * 100))
+    print("  - 夏普比率 (Sharpe Ratio):      {:.2f}".format(sharpe))
+    print("  - 最大回撤 (Max Drawdown):      {:.2f}%".format(max_dd * 100))
     print("  - 平仓胜率 (Win Rate):              {:.1f}%".format(win_rate * 100))
     print("="*75 + "\n")
 

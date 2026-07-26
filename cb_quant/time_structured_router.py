@@ -42,7 +42,7 @@ class CBTimeStructuredRouter:
         ].copy()
         
         eligible_panel['daily_rank'] = eligible_panel.groupby('feature_date')['double_low'].rank(ascending=True, method='min')
-        target_basket = eligible_panel[eligible_panel['daily_rank'] <= 10][['ts_code', 'feature_date', 'trade_date', 'daily_rank', 'double_low']]
+        target_basket = eligible_panel[eligible_panel['daily_rank'] <= 10][['ts_code', 'feature_date', 'trade_date', 'daily_rank']]
         
         # B. 匹配 T 日 (trade_date) 盘中 15m 信号
         # 将目标池与其在 trade_date 当天的 15m 行情合并

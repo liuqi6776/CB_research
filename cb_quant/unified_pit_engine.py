@@ -28,18 +28,20 @@ class CBUnifiedPITEngine:
            - is_executable_at_fill (成交资格)
         """
         df = df_15m.copy()
+        df['trade_time'] = pd.to_datetime(df['trade_time'], errors='coerce')
         df['date_str'] = df['trade_time'].dt.strftime('%Y%m%d')
-        df['date_int'] = df['date_str'].astype(int)
+        df['time_str'] = df['trade_time'].dt.strftime('%H:%M')
+        df['date_int'] = pd.to_numeric(df['date_str'], errors='coerce').fillna(20991231).astype(int)
 
         # 1. 接入基础元数据 (cb_basic_info.csv)
         basic_path = os.path.join(self.mins_data_dir, "cb_basic_info.csv")
         if os.path.exists(basic_path):
             basic_info = pd.read_csv(basic_path)
-            cols = ['ts_code']
-            for c in ['stk_code', 'issue_size', 'list_date', 'delist_date', 'conv_price', 'first_conv_price']:
-                if c in basic_info.columns:
-                    cols.append(c)
-            df = df.merge(basic_info[cols], on='ts_code', how='left')
+            cols = [c for c in ['stk_code', 'issue_size', 'list_date', 'delist_date', 'conv_price', 'first_conv_price'] if c in basic_info.columns]
+            for c in cols:
+                if c in df.columns:
+                    df.drop(columns=[c], inplace=True)
+            df = df.merge(basic_info[['ts_code'] + cols], on='ts_code', how='left')
 
         # 2. 接入强赎公告日期表 (cb_call_history.csv)
         call_path = os.path.join(self.mins_data_dir, "cb_call_history.csv")
@@ -58,9 +60,11 @@ class CBUnifiedPITEngine:
 
         # 3. 接入 D:\iquant_data\data_v2 真实 T-1 正股日线收盘价 (stk_close_t1)
         day_files = sorted(glob.glob(os.path.join(self.data_v2_dir, "data_day1", "*.parquet")))
-        if day_files and 'stk_code' in df.columns:
+        valid_day_files = [f for f in day_files if os.path.basename(f).replace('.parquet','') >= '20241201']
+        
+        if valid_day_files and 'stk_code' in df.columns:
             day_dfs = []
-            for f in day_files:
+            for f in valid_day_files:
                 try:
                     df_sub = pd.read_parquet(f, columns=['ts_code', 'trade_date', 'close'])
                     day_dfs.append(df_sub)
@@ -74,8 +78,15 @@ class CBUnifiedPITEngine:
                 # T-1 对齐: 下一交易日 t1_date_str 使用的是上一个交易日的 stk_close_t1
                 stk_daily['t1_date_str'] = stk_daily.groupby('stk_code')['trade_date_str'].shift(-1)
                 
+                for drop_col in ['stk_close_t1', 't1_date_str']:
+                    if drop_col in df.columns:
+                        df.drop(columns=[drop_col], inplace=True)
+
                 df = df.merge(stk_daily[['stk_code', 't1_date_str', 'stk_close_t1']], 
                               left_on=['stk_code', 'date_str'], right_on=['stk_code', 't1_date_str'], how='left')
+
+        if 'stk_close_t1' not in df.columns:
+            df['stk_close_t1'] = np.nan
 
         # 4. 严禁任何 .fillna() 默认放行补齐！缺失即判定无效！
         stk_c = pd.to_numeric(df['stk_close_t1'], errors='coerce') if 'stk_close_t1' in df.columns else pd.Series(np.nan, index=df.index)
