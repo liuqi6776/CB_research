@@ -88,6 +88,26 @@ class CBUnifiedPITEngine:
         if 'stk_close_t1' not in df.columns:
             df['stk_close_t1'] = np.nan
 
+        # 3-B. 接入正股日频筹码与成本分布因子 (daily_chip.parquet)
+        chip_path = "daily_chip.parquet"
+        if os.path.exists(chip_path) and 'stk_code' in df.columns:
+            try:
+                df_chip = pd.read_parquet(chip_path)
+                df_chip['trade_date_str'] = df_chip['trade_date'].astype(str)
+                df_chip.rename(columns={'ts_code': 'stk_code'}, inplace=True)
+                # T-1 筹码分布对齐: t1_date_str
+                df_chip['t1_date_str'] = df_chip.groupby('stk_code')['trade_date_str'].shift(-1)
+                
+                chip_cols = ['chip_profit_ratio', 'chip_concentration_90', 'chip_position_20d']
+                for c in chip_cols:
+                    if c in df.columns:
+                        df.drop(columns=[c], inplace=True)
+                
+                df = df.merge(df_chip[['stk_code', 't1_date_str'] + chip_cols],
+                              left_on=['stk_code', 'date_str'], right_on=['stk_code', 't1_date_str'], how='left')
+            except Exception as e:
+                logger.warning(f"筹码因子合并失败: {e}")
+
         # 4. 严禁任何 .fillna() 默认放行补齐！缺失即判定无效！
         stk_c = pd.to_numeric(df['stk_close_t1'], errors='coerce') if 'stk_close_t1' in df.columns else pd.Series(np.nan, index=df.index)
         conv_px = pd.to_numeric(df['conv_price'], errors='coerce') if 'conv_price' in df.columns else pd.Series(np.nan, index=df.index)
