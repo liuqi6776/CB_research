@@ -37,8 +37,7 @@ class CBDataLoader:
         logger.info(f"搜索到 {len(parquet_files)} 只可转债行情文件，开始清洗与拼接...")
         
         all_dfs = []
-        if max_bonds and max_bonds > 0:
-            parquet_files = parquet_files[:max_bonds]
+        loaded_bonds = 0
 
         for f in parquet_files:
             try:
@@ -59,6 +58,9 @@ class CBDataLoader:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
                 
                 all_dfs.append(df[['ts_code', 'trade_time', 'open', 'high', 'low', 'close', 'vol', 'amount']])
+                loaded_bonds += 1
+                if max_bonds and max_bonds > 0 and loaded_bonds >= max_bonds:
+                    break
             except Exception as e:
                 logger.warning(f"读取文件 {f} 失败: {e}")
 

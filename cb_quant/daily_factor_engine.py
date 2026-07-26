@@ -39,8 +39,15 @@ class CBDailyFactorEngine:
         daily_panel['double_low'] = daily_panel['close'] + 100.0 * daily_panel['premium_rate_t1'].fillna(0.30)
         
         # 选债过滤器 (严格低风险防御)
-        daily_panel['curr_iss_amt'] = pd.to_numeric(daily_panel.get('issue_size', np.nan), errors='coerce').fillna(5.0)
-        daily_panel['delist_date_clean'] = pd.to_numeric(daily_panel.get('delist_date', 20991231), errors='coerce').fillna(20991231)
+        if 'issue_size' in daily_panel.columns:
+            raw_amt = pd.to_numeric(daily_panel['issue_size'], errors='coerce').fillna(5.0)
+            daily_panel['curr_iss_amt'] = np.where(raw_amt > 10000.0, raw_amt / 1e8, raw_amt)
+        else:
+            daily_panel['curr_iss_amt'] = 5.0
+        if 'delist_date' in daily_panel.columns:
+            daily_panel['delist_date_clean'] = pd.to_numeric(daily_panel['delist_date'], errors='coerce').fillna(20991231)
+        else:
+            daily_panel['delist_date_clean'] = 20991231
         daily_panel['date_int'] = daily_panel['date_str'].astype(int)
         daily_panel['is_redeemed'] = daily_panel['date_int'] >= daily_panel['delist_date_clean']
         
