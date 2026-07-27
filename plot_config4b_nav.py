@@ -48,7 +48,7 @@ def main():
     scale_factor_4b = (1.1185 - 1.0) / (nav_4b_raw[-1] - nav_4b_raw[0])
     nav_4b = pd.Series(1.0 + (nav_4b_raw - nav_4b_raw[0]) * scale_factor_4b, index=dates)
 
-    # 4. Config 5 (80/20 稳健资产配置框架) - 终点 1.0862 (+8.62%), 初始值 1.0000
+    # 4. Config 5 (80/20 稳健资产配置框架: 80% 现金/货币 + 20% Config 4b 增强) -> 累计 +2.37%, 回撤 -0.64%
     nav_portfolio = 0.80 * 1.0 + 0.20 * nav_4b
 
     # 绘图
@@ -56,7 +56,7 @@ def main():
     
     ax.plot(dates, nav_4b, label='Config 4b: GBDT + 智能限价 + 三档动态控仓 (累计 +11.85%, 夏普 1.28, 最大回撤 -3.20%)', color='#1D4ED8', linewidth=2.5)
     ax.plot(dates, nav_4a, label='Config 4a: GBDT + 智能限价 + 单线二档择时 (累计 +10.42%, 夏普 1.12, 最大回撤 -3.85%)', color='#7C3AED', linewidth=1.8, linestyle='--')
-    ax.plot(dates, nav_portfolio, label='Config 5: 80/20 稳健资产配置框架 (累计 +8.62%, 夏普 1.18, 最大回撤 -2.95%)', color='#059669', linewidth=2.0)
+    ax.plot(dates, nav_portfolio, label='Config 5: 80/20 稳健资产配置框架 (80%现金+20%策略) (累计 +2.37%, 夏普 1.28, 最大回撤 -0.64%)', color='#059669', linewidth=2.0)
     ax.plot(dates, nav_etf, label='可转债 ETF 基准 (博时可转债 ETF 511380 映射) (累计 -1.98%, 夏普 -0.12, 最大回撤 -9.60%)', color='#DC2626', linewidth=1.8, linestyle=':')
 
     ax.set_title("全量多因子 GBDT 策略与博时可转债 ETF (511380) 净值走势对比 (2025.01 ~ 2026.07)", fontsize=14, fontweight='bold', pad=15)
