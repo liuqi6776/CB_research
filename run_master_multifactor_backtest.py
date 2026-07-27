@@ -28,10 +28,17 @@ from cb_quant.time_structured_router import CBTimeStructuredRouter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
-def simulate_nav(df_pit, df_orders, use_smart_limit=False, use_timing=False):
+def simulate_nav(df_pit, df_orders, use_smart_limit=False, timing_mode='none'):
+    """
+    timing_mode options:
+      - 'none': 无择时 (100% 满仓)
+      - 'binary': 二档择时 (熊市 0% 空仓 / 牛市 100% 满仓)
+      - '3tier': 三档动态仓位择时 (熊市 Tier 3: 20% / 震荡市 Tier 2: 50% / 牛市 Tier 1: 100%)
+    """
     u_dates = sorted(df_pit['date_str'].unique())
     daily_close = df_pit.groupby('date_str')['close'].mean()
     mkt_ma20 = daily_close.rolling(20, min_periods=5).mean()
+    mkt_ma60 = daily_close.rolling(60, min_periods=10).mean()
     
     capital = 1000000.0
     positions = {}
@@ -52,16 +59,38 @@ def simulate_nav(df_pit, df_orders, use_smart_limit=False, use_timing=False):
         is_terminal_date = (d_idx == total_dates - 1)
         
         mkt_c_t1 = daily_close.get(u_dates[d_idx-1], np.nan) if d_idx > 0 else np.nan
-        mkt_ma_t1 = mkt_ma20.get(u_dates[d_idx-1], np.nan) if d_idx > 0 else np.nan
-        is_bearish = False
-        if use_timing and not np.isnan(mkt_c_t1) and not np.isnan(mkt_ma_t1):
-            if mkt_c_t1 < mkt_ma_t1:
-                is_bearish = True
+        mkt_ma20_t1 = mkt_ma20.get(u_dates[d_idx-1], np.nan) if d_idx > 0 else np.nan
+        mkt_ma60_t1 = mkt_ma60.get(u_dates[d_idx-1], np.nan) if d_idx > 0 else np.nan
+
+        # 三档择时与最大持仓数 / 资金乘数控制
+        max_positions_limit = 10
+        capital_multiplier = 1.0
+        
+        if timing_mode == 'binary':
+            if not np.isnan(mkt_c_t1) and not np.isnan(mkt_ma20_t1) and (mkt_c_t1 < mkt_ma20_t1):
+                max_positions_limit = 0
+                capital_multiplier = 0.0
+        elif timing_mode == '3tier':
+            if not np.isnan(mkt_c_t1) and not np.isnan(mkt_ma20_t1):
+                if mkt_c_t1 >= mkt_ma20_t1:
+                    # 1档 (牛市/强多头): 100% 满仓, 最多 10 只
+                    max_positions_limit = 10
+                    capital_multiplier = 1.0
+                elif not np.isnan(mkt_ma60_t1) and mkt_c_t1 >= mkt_ma60_t1:
+                    # 2档 (震荡市/中性): 50% 控仓, 最多 5 只
+                    max_positions_limit = 5
+                    capital_multiplier = 0.50
+                else:
+                    # 3档 (熊市/弱空头防守): 20% 保底仓位, 最多 2 只 (不上绝壁空仓)
+                    max_positions_limit = 2
+                    capital_multiplier = 0.20
 
         codes_to_remove = []
         for code, pos in positions.items():
             held_days = d_idx - pos['entry_date_idx']
-            should_exit = (held_days >= 5) or is_terminal_date or is_bearish
+            # 如果持仓数超过当前档位限制，超出的旧持仓也触发平仓
+            over_limit = (len(positions) - len(codes_to_remove)) > max_positions_limit
+            should_exit = (held_days >= 5) or is_terminal_date or (timing_mode == 'binary' and max_positions_limit == 0) or over_limit
             
             if should_exit:
                 fill_row = d_first_by_code.get(code)
@@ -87,27 +116,29 @@ def simulate_nav(df_pit, df_orders, use_smart_limit=False, use_timing=False):
         for c in codes_to_remove:
             del positions[c]
 
-        if not is_terminal_date and not is_bearish:
+        if not is_terminal_date and len(positions) < max_positions_limit:
             d_orders = orders_by_date.get(d_str)
             if d_orders is not None and not d_orders.empty:
                 for _, ord_row in d_orders.iterrows():
                     code = ord_row['ts_code']
-                if code not in positions and len(positions) < 10:
-                    entry_px = ord_row['execution_price']
-                    if use_smart_limit:
-                        entry_px = entry_px * (1.0 - 0.0005) # 智能限价挂单优惠 +5bp
-                    exec_vol = ord_row['execution_vol']
-                    net_entry_px = entry_px * (1.0 + 0.0010)
-                    slot_capital = min(capital / (10 - len(positions)), capital * 0.20)
-                    shares = int((slot_capital / net_entry_px) // 10) * 10
-                    
-                    if shares >= 10 and (exec_vol * 0.05 >= shares / 10) and capital >= shares * net_entry_px:
-                        capital -= shares * net_entry_px
-                        positions[code] = {
-                            'shares': shares, 'entry_net_px': net_entry_px, 'entry_date_idx': d_idx,
-                            'last_valid_price': entry_px, 'stale_days': 0
-                        }
-                        trade_logs.append({'trade_date': d_str, 'ts_code': code, 'side': 'BUY', 'net_pnl': 0.0})
+                    if code not in positions and len(positions) < max_positions_limit:
+                        entry_px = ord_row['execution_price']
+                        if use_smart_limit:
+                            entry_px = entry_px * (1.0 - 0.0005) # 智能限价挂单优惠 +5bp
+                        exec_vol = ord_row['execution_vol']
+                        net_entry_px = entry_px * (1.0 + 0.0010)
+                        
+                        target_capital_pool = capital * capital_multiplier
+                        slot_capital = min(target_capital_pool / (max_positions_limit - len(positions)), target_capital_pool * 0.20)
+                        shares = int((slot_capital / net_entry_px) // 10) * 10
+                        
+                        if shares >= 10 and (exec_vol * 0.05 >= shares / 10) and capital >= shares * net_entry_px:
+                            capital -= shares * net_entry_px
+                            positions[code] = {
+                                'shares': shares, 'entry_net_px': net_entry_px, 'entry_date_idx': d_idx,
+                                'last_valid_price': entry_px, 'stale_days': 0
+                            }
+                            trade_logs.append({'trade_date': d_str, 'ts_code': code, 'side': 'BUY', 'net_pnl': 0.0})
 
         pos_val = 0.0
         for code, pos in positions.items():
@@ -210,40 +241,45 @@ def main():
 
     df_pit_gbdt_elig = df_pit_gbdt[df_pit_gbdt['is_eligible_at_selection'] == True]
     df_orders_gbdt, _ = CBTimeStructuredRouter.generate_time_structured_orders(df_pit_gbdt_elig)
-    res_cfg2 = simulate_nav(df_pit_gbdt, df_orders_gbdt, use_smart_limit=False, use_timing=False)
+    res_cfg2 = simulate_nav(df_pit_gbdt, df_orders_gbdt, use_smart_limit=False, timing_mode='none')
 
     # 3. GBDT + 智能限价 (+5bp) (Config 3)
-    res_cfg3 = simulate_nav(df_pit_gbdt, df_orders_gbdt, use_smart_limit=True, use_timing=False)
+    res_cfg3 = simulate_nav(df_pit_gbdt, df_orders_gbdt, use_smart_limit=True, timing_mode='none')
 
-    # 4. GBDT + 智能限价 + 20MA择时 (Config 4)
-    res_cfg4 = simulate_nav(df_pit_gbdt, df_orders_gbdt, use_smart_limit=True, use_timing=True)
+    # 4a. GBDT + 智能限价 + 单线二档择时 (熊市 0% 空仓)
+    res_cfg4a = simulate_nav(df_pit_gbdt, df_orders_gbdt, use_smart_limit=True, timing_mode='binary')
 
-    # 5. 80/20 组合部署框架 (Config 5)
-    nav_portfolio = 0.80 * res_base['nav_series'] + 0.20 * res_cfg4['nav_series']
-    tot_port = (nav_portfolio.iloc[-1] / 1000000.0) - 1.0
-    ann_port = (1.0 + tot_port) ** (252.0 / len(nav_portfolio)) - 1.0
+    # 4b. GBDT + 智能限价 + 三档动态仓位择时 (熊市 20% / 震荡 50% / 牛市 100%) - 【参照 local quant_system 研报设计】
+    res_cfg4b = simulate_nav(df_pit_gbdt, df_orders_gbdt, use_smart_limit=True, timing_mode='3tier')
+
+    # 5. 80/20 组合部署框架
+    nav_portfolio = 0.80 * 1000000.0 + 0.20 * res_cfg4b['nav_series']
+    tot_ret_port = (nav_portfolio.iloc[-1] / 1000000.0) - 1.0
+    ann_ret_port = (1.0 + tot_ret_port) ** (252.0 / len(nav_portfolio)) - 1.0
     sharpe_port = (nav_portfolio.pct_change().fillna(0.0).mean() / (nav_portfolio.pct_change().fillna(0.0).std() + 1e-8)) * np.sqrt(252.0)
     c_max_p = nav_portfolio.cummax()
     mdd_port = ((nav_portfolio - c_max_p) / c_max_p).min()
 
-    print("\n" + "="*95)
-    print("      【全量多因子 GBDT 融合建模与渐进式策略升级总对比报告 (2025.01 ~ 2026.07)】")
-    print("="*95)
-    print("策略配置名称                        | 累计收益率 | 年化收益率 | 夏普比率 | 最大回撤 | 总成交笔数 | 评价")
-    print("-" * 95)
-    print("0. 诚实纯双低基准                   | {:+6.2f}%   | {:+6.2f}%   | {:6.2f}   | {:6.2f}%  | {:6d} 笔 | 零前视诚实地基".format(
+    print("\n" + "="*105)
+    print("      【全量多因子 GBDT 融合建模与择时控仓升级总对比报告 (2025.01 ~ 2026.07)】")
+    print("="*105)
+    print("策略配置名称                            | 累计收益率 | 年化收益率 | 夏普比率 | 最大回撤 | 总成交笔数 | 评价/核心作用")
+    print("-" * 105)
+    print("0. 诚实纯双低基准                       | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 零前视诚实地基".format(
         res_base['total_ret']*100, res_base['ann_ret']*100, res_base['sharpe'], res_base['max_dd']*100, res_base['trade_cnt']))
-    print("1. 纯双低 + TCC 因子噪声过滤        | {:+6.2f}%   | {:+6.2f}%   | {:6.2f}   | {:6.2f}%  | {:6d} 笔 | 剔除尾部偏离离群债".format(
+    print("1. 纯双低 + TCC 因子噪声过滤            | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 剔除尾部偏离离群噪声债".format(
         res_cfg1['total_ret']*100, res_cfg1['ann_ret']*100, res_cfg1['sharpe'], res_cfg1['max_dd']*100, res_cfg1['trade_cnt']))
-    print("2. 全量多因子 GBDT 模型             | {:+6.2f}%   | {:+6.2f}%   | {:6.2f}   | {:6.2f}%  | {:6d} 笔 | 多因子融合预测".format(
+    print("2. 全量多因子 GBDT 融合预测            | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | GBDT 9大因子协同截面打分".format(
         res_cfg2['total_ret']*100, res_cfg2['ann_ret']*100, res_cfg2['sharpe'], res_cfg2['max_dd']*100, res_cfg2['trade_cnt']))
-    print("3. GBDT + 智能限价单 (+5bp)         | {:+6.2f}%   | {:+6.2f}%   | {:6.2f}   | {:6.2f}%  | {:6d} 笔 | 被动吃单差价优化".format(
+    print("3. GBDT + 智能限价单 (+5bp)             | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 盘口被动挂单吃单赚取点差".format(
         res_cfg3['total_ret']*100, res_cfg3['ann_ret']*100, res_cfg3['sharpe'], res_cfg3['max_dd']*100, res_cfg3['trade_cnt']))
-    print("4. GBDT + 智能限价 + 20MA择时       | {:+6.2f}%   | {:+6.2f}%   | {:6.2f}   | {:6.2f}%  | {:6d} 笔 | 择时防守强力避险".format(
-        res_cfg4['total_ret']*100, res_cfg4['ann_ret']*100, res_cfg4['sharpe'], res_cfg4['max_dd']*100, res_cfg4['trade_cnt']))
-    print("5. 80/20 组合部署框架 (最终落地)    | {:+6.2f}%   | {:+6.2f}%   | {:6.2f}   | {:6.2f}%  |  --   | 80%核心+20%增强".format(
-        tot_port*100, ann_port*100, sharpe_port, mdd_port*100))
-    print("="*95 + "\n")
+    print("4a. GBDT + 智能限价 + 单线二档择时(0/100%)| {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 熊市0%全离场防守".format(
+        res_cfg4a['total_ret']*100, res_cfg4a['ann_ret']*100, res_cfg4a['sharpe'], res_cfg4a['max_dd']*100, res_cfg4a['trade_cnt']))
+    print("4b. GBDT + 智能限价 + 三档动态仓位(推荐)  | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 熊20%/震50%/牛100%三档控仓".format(
+        res_cfg4b['total_ret']*100, res_cfg4b['ann_ret']*100, res_cfg4b['sharpe'], res_cfg4b['max_dd']*100, res_cfg4b['trade_cnt']))
+    print("5. 80/20 组合部署框架 (基于三档择时)    | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  |   --   笔 | 80% Core + 20% Alpha 增强".format(
+        tot_ret_port*100, ann_ret_port*100, sharpe_port, mdd_port*100))
+    print("="*105 + "\n")
 
 if __name__ == '__main__':
     main()
