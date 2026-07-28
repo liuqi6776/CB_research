@@ -49,10 +49,10 @@ class CBTCCFactorEngine:
         
         return tcc
 
-    def generate_tcc_panel(self, start_date="2024-12-01", end_date="2026-07-25"):
+    def generate_tcc_panel(self, start_date="2020-01-01", end_date="2026-07-25"):
         logging.info("=== 开始构建时间网络相对中心度 (TCC) 因子面板 ===")
         loader = CBDataLoader()
-        df_panel = loader.load_minute_panel(start_date=start_date, end_date=end_date, max_bonds=250)
+        df_panel = loader.load_minute_panel(start_date=start_date, end_date=end_date, max_bonds=None)
         
         # 提取每日收盘价透视表
         df_panel['date_str'] = pd.to_datetime(df_panel['trade_time']).dt.strftime('%Y%m%d')

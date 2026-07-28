@@ -30,7 +30,7 @@ class CBDataLoader:
         """
         加载指定时间段内的所有可转债 5 分钟 K 线数据，并构建对齐面板
         """
-        parquet_files = glob.glob(os.path.join(self.parquet_dir, "*.parquet"))
+        parquet_files = sorted(glob.glob(os.path.join(self.parquet_dir, "*.parquet")))
         if not parquet_files:
             raise FileNotFoundError(f"未在 {self.parquet_dir} 找到任何 parquet 文件。")
             

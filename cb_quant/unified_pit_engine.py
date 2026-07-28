@@ -51,16 +51,17 @@ class CBUnifiedPITEngine:
             call_info['call_date_clean'] = pd.to_numeric(call_info['call_date'], errors='coerce')
             df = df.merge(call_info[['ts_code', 'call_date_clean']], on='ts_code', how='left')
 
-        # 强赎与退市判定 (严格 PIT 逻辑: date_int >= call_date 或 delist_date 时判定已强赎/退市)
+        # 强赎与退市判定 (严格 PIT 逻辑: date_int >= call_date_clean - 5 或 delist_date 时判定不可交易)
         df['delist_date_clean'] = pd.to_numeric(df['delist_date'], errors='coerce') if 'delist_date' in df.columns else np.nan
+        # 强赎公告日前置 5 日防御规则，防止在强赎提示期误建仓
         df['is_redeemed'] = np.where(
-            df['call_date_clean'].notnull() & (df['date_int'] >= df['call_date_clean']), True,
+            df['call_date_clean'].notnull() & (df['date_int'] >= (df['call_date_clean'] - 5)), True,
             np.where(df['delist_date_clean'].notnull() & (df['date_int'] >= df['delist_date_clean']), True, False)
         )
 
         # 3. 接入 D:\iquant_data\data_v2 真实 T-1 正股日线收盘价 (stk_close_t1)
         day_files = sorted(glob.glob(os.path.join(self.data_v2_dir, "data_day1", "*.parquet")))
-        valid_day_files = [f for f in day_files if os.path.basename(f).replace('.parquet','') >= '20241201']
+        valid_day_files = day_files
         
         if valid_day_files and 'stk_code' in df.columns:
             day_dfs = []
@@ -110,7 +111,12 @@ class CBUnifiedPITEngine:
 
         # 4. 严禁任何 .fillna() 默认放行补齐！缺失即判定无效！
         stk_c = pd.to_numeric(df['stk_close_t1'], errors='coerce') if 'stk_close_t1' in df.columns else pd.Series(np.nan, index=df.index)
-        conv_px = pd.to_numeric(df['conv_price'], errors='coerce') if 'conv_price' in df.columns else pd.Series(np.nan, index=df.index)
+        latest_conv_px = pd.to_numeric(df['conv_price'], errors='coerce') if 'conv_price' in df.columns else pd.Series(np.nan, index=df.index)
+        first_conv_px = pd.to_numeric(df['first_conv_price'], errors='coerce') if 'first_conv_price' in df.columns else latest_conv_px
+        
+        # PIT 无前视转股价逻辑: 若包含初始转股价 first_conv_price 且不同于最新转股价，历史样本使用 first_conv_price 防范下修倒灌
+        conv_px = np.where(first_conv_px.notnull() & (first_conv_px > 0), first_conv_px, latest_conv_px)
+        conv_px = pd.Series(conv_px, index=df.index)
         
         df['conv_value_t1'] = np.where(stk_c.notnull() & conv_px.notnull() & (conv_px > 0), 
                                       100.0 * stk_c / conv_px, np.nan)
