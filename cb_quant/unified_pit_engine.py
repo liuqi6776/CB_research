@@ -109,13 +109,37 @@ class CBUnifiedPITEngine:
             except Exception as e:
                 logger.warning(f"筹码因子合并失败: {e}")
 
+        # 1-B. 接入真实全网历史转股价调整事件表 (cb_conv_price_history.csv)
+        hist_adj_path = os.path.join(self.mins_data_dir, "cb_conv_price_history.csv")
+        if os.path.exists(hist_adj_path) and 'stk_code' in df.columns:
+            try:
+                df_adj_hist = pd.read_csv(hist_adj_path)
+                df_adj_hist['stk_code_clean'] = df_adj_hist['stk_code'].astype(str).str.split('.').str[0].str.zfill(6)
+                df_adj_hist['pub_date_int'] = pd.to_numeric(df_adj_hist['pub_date'], errors='coerce')
+                min_adj_date = df_adj_hist.groupby('stk_code_clean')['pub_date_int'].min().reset_index()
+                min_adj_date.rename(columns={'pub_date_int': 'first_adj_pub_date'}, inplace=True)
+                
+                df['stk_code_clean'] = df['stk_code'].astype(str).str.split('.').str[0].str.zfill(6)
+                if 'first_adj_pub_date' in df.columns:
+                    df.drop(columns=['first_adj_pub_date'], inplace=True)
+                df = df.merge(min_adj_date, on='stk_code_clean', how='left')
+                if 'stk_code_clean' in df.columns:
+                    df.drop(columns=['stk_code_clean'], inplace=True)
+            except Exception as e:
+                logger.warning(f"合并历史转股价调整事件表失败: {e}")
+
         # 4. 严禁任何 .fillna() 默认放行补齐！缺失即判定无效！
         stk_c = pd.to_numeric(df['stk_close_t1'], errors='coerce') if 'stk_close_t1' in df.columns else pd.Series(np.nan, index=df.index)
         latest_conv_px = pd.to_numeric(df['conv_price'], errors='coerce') if 'conv_price' in df.columns else pd.Series(np.nan, index=df.index)
         first_conv_px = pd.to_numeric(df['first_conv_price'], errors='coerce') if 'first_conv_price' in df.columns else latest_conv_px
         
-        # PIT 无前视转股价逻辑: 若包含初始转股价 first_conv_price 且不同于最新转股价，历史样本使用 first_conv_price 防范下修倒灌
-        conv_px = np.where(first_conv_px.notnull() & (first_conv_px > 0), first_conv_px, latest_conv_px)
+        # PIT 无前视转股价 As-Of 逻辑:
+        # 若样本日期 date_int 小于首次下修公告日 first_adj_pub_date，表明下修尚未发生，严格使用初始转股价 first_conv_price；
+        # 若样本日期 date_int >= first_adj_pub_date，表明下修已公告生效，使用更新后的转股价。
+        has_adj = df['first_adj_pub_date'].notnull() if 'first_adj_pub_date' in df.columns else pd.Series(False, index=df.index)
+        is_pre_adj = has_adj & (df['date_int'] < df['first_adj_pub_date'])
+        
+        conv_px = np.where(is_pre_adj & first_conv_px.notnull() & (first_conv_px > 0), first_conv_px, latest_conv_px)
         conv_px = pd.Series(conv_px, index=df.index)
         
         df['conv_value_t1'] = np.where(stk_c.notnull() & conv_px.notnull() & (conv_px > 0), 
