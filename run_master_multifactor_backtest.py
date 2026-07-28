@@ -13,11 +13,7 @@ import numpy as np
 import pandas as pd
 
 from cb_quant.data_loader import CBDataLoader
-from cb_quant.strict_15m_clean_engine import CBStrict15mCleanEngine
-from cb_quant.unified_pit_engine import CBUnifiedPITEngine
-from cb_quant.asof_pit_adapter import CBAsOfPITAdapter
-from cb_quant.tcc_factor import CBTCCFactorEngine
-from cb_quant.extreme_return_factor import CBExtremeReturnFactorEngine
+from cb_quant.feature_pipeline import build_unified_feature_matrix, FEATURE_COLS
 from cb_quant.time_structured_router import CBTimeStructuredRouter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -159,43 +155,17 @@ def simulate_nav(df_pit, df_orders, use_smart_limit=False, timing_mode='none', u
     
     return {
         'total_ret': tot_ret, 'ann_ret': ann_ret, 'sharpe': sharpe, 'max_dd': max_dd,
-        'trade_cnt': len(trade_logs), 'nav_series': nav_s
+        'trade_cnt': len(trade_logs), 'nav_series': nav_s, 'u_dates': u_dates
     }
 
 def run_empirical_backtest():
     logging.info("=== 启动【全量多因子 GBDT 严格样本外 (OOS 2024-2026)】回测流程 ===")
     
     loader = CBDataLoader()
-    df_panel = loader.load_minute_panel(start_date="2024-01-01", end_date="2026-07-25", max_bonds=None)
+    df_15m = loader.load_minute_panel(start_date="2024-01-01", max_bonds=None)
     
-    clean_engine = CBStrict15mCleanEngine()
-    df_15m = clean_engine.load_and_resample_clean_15m(df_panel)
-    
-    pit_adapter = CBAsOfPITAdapter()
-    df_15m = pit_adapter.attach_asof_pit_metadata(df_15m)
-
-    unified_engine = CBUnifiedPITEngine()
-    df_pit_base = unified_engine.build_unified_state_panel(df_15m)
-    
-    # 接入 TCC 因子
-    tcc_engine = CBTCCFactorEngine(window=21)
-    tcc_long = tcc_engine.generate_tcc_panel(start_date="2024-01-01", end_date="2026-07-25")
-    u_tcc_dates = sorted(tcc_long['date_str'].unique())
-    map_tcc = {u_tcc_dates[i]: u_tcc_dates[i+1] for i in range(len(u_tcc_dates)-1)}
-    tcc_long['t1_trade_date'] = tcc_long['date_str'].map(map_tcc)
-    
-    df_pit_base = df_pit_base.merge(tcc_long[['ts_code', 't1_trade_date', 'tcc_factor']],
-                                    left_on=['ts_code', 'date_str'], right_on=['ts_code', 't1_trade_date'], how='left')
-                                    
-    # 接入收益率极大值幅度因子
-    erm_engine = CBExtremeReturnFactorEngine()
-    df_erm = erm_engine.generate_extreme_return_panel(df_panel)
-    u_erm_dates = sorted(df_erm['date_str'].unique())
-    map_erm = {u_erm_dates[i]: u_erm_dates[i+1] for i in range(len(u_erm_dates)-1)}
-    df_erm['t1_trade_date'] = df_erm['date_str'].map(map_erm)
-    
-    df_pit_base = df_pit_base.merge(df_erm[['ts_code', 't1_trade_date', 'ex_rtn_max_val_5min', 'ex_rtn_max_val_1min', 'ex_rtn_min_freq_5min']],
-                                    left_on=['ts_code', 'date_str'], right_on=['ts_code', 't1_trade_date'], how='left')
+    # 调用统一 Pipeline 提取 OOS 特征矩阵 (与训练集 100% 绝对同构)
+    df_pit_base = build_unified_feature_matrix(df_15m)
 
     # 0. 诚实纯双低基准
     df_pit_base_elig = df_pit_base[df_pit_base['is_eligible_at_selection'] == True]
@@ -216,14 +186,15 @@ def run_empirical_backtest():
 
     # 2. 全量多因子 GBDT 模型 (Config 2 - 纯样本外 OOS 模型)
     df_pit_gbdt = df_pit_tcc.copy()
-    model_path = "master_multifactor_gbdt.joblib"
+    
+    # 修复模型加载路径: 优先读取 artifacts/ 目录
+    model_path = r"c:\Users\liuqi\quant_system_v2\artifacts\master_multifactor_gbdt.joblib"
+    if not os.path.exists(model_path):
+        model_path = "master_multifactor_gbdt.joblib"
+        
     if os.path.exists(model_path):
         model = joblib.load(model_path)
-        feature_cols = [
-            'double_low', 'conv_value_t1', 'premium_rate_t1', 'curr_iss_amt',
-            'tcc_factor', 'ex_rtn_max_val_5min', 'ex_rtn_max_val_1min', 'ex_rtn_min_freq_5min',
-            'spike_ratio', 'vol', 'amount'
-        ]
+        feature_cols = FEATURE_COLS
         for c in feature_cols:
             if c not in df_pit_gbdt.columns:
                 df_pit_gbdt[c] = np.nan

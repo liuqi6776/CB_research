@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 """
-全网可转债历史转股价多阶变动与生效日 As-Of 事件表爬虫
-CNINFO (巨潮资讯) 官方历史公告 API 抓取 + PDF 多阶价格与生效日提取
+全网可转债历史转股价多阶变动与生效日 As-Of 事件表爬虫 (严谨清洗版)
+CNINFO (巨潮资讯) 官方历史公告 API 抓取 + 排除"不向下修正"公告 + 生效日有效性校验 (effective_date >= pub_date)
 """
 
 import os
@@ -17,7 +17,13 @@ import pdfplumber
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-def parse_cninfo_announcement_pdf(pdf_url):
+# 排除干扰/非调价/不修正类标题关键字
+EXCLUDE_KEYWORDS = [
+    "不向下修正", "不修正", "暂不修正", "取消修正", "致歉", "提示", "进展",
+    "建议", "不调整", "暂不调整", "规则", "公告的修正", "更正", "说明"
+]
+
+def parse_cninfo_announcement_pdf(pdf_url, pub_date_str):
     """从 CNINFO 公告 PDF 解析调整前转股价、调整后转股价及生效日期"""
     try:
         resp = requests.get(pdf_url, timeout=10)
@@ -34,17 +40,18 @@ def parse_cninfo_announcement_pdf(pdf_url):
             raw_d = date_matches[0].replace(' ', '')
             m = re.match(r'(\d{4})年(\d{1,2})月(\d{1,2})日', raw_d)
             if m:
-                effective_date = f"{int(m.group(1)):04d}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+                parsed_d = f"{int(m.group(1)):04d}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+                # 校验合规性: 生效日必须 >= 公告发布日
+                if parsed_d >= pub_date_str:
+                    effective_date = parsed_d
                 
         # 2. 解析价格数字 (调整前转股价 vs 调整后转股价)
-        # 匹配 pattern: 调整前... XX.XX 元/股 ... 调整后... XX.XX 元/股
         prices = [float(p) for p in re.findall(r'(\d+\.\d+)\s*元/?股', text)]
         prices = [p for p in prices if 1.0 <= p <= 500.0]
         
         new_price = None
         prev_price = None
         
-        # 针对 "调整后的转股价格为 XX.XX 元/股"
         new_matches = re.findall(r'调整后.*?(?:转股价格|转股价)为?\s*(\d+\.\d+)\s*元', text)
         if new_matches:
             new_price = float(new_matches[0])
@@ -61,7 +68,7 @@ def parse_cninfo_announcement_pdf(pdf_url):
         return None, None, None
 
 def scrape_full_conv_price_history():
-    print("=== 开始从 CNINFO (巨潮资讯) 全量抓取多阶转股价变动与生效日事件表 ===")
+    print("=== 开始从 CNINFO (巨潮资讯) 抓取多阶转股价变动与生效日事件表 (严谨清洗版) ===")
     
     url = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
     headers = {
@@ -69,12 +76,12 @@ def scrape_full_conv_price_history():
         'X-Requested-With': 'XMLHttpRequest'
     }
     
-    keywords = ["向下修正转股价格", "转股价格调整", "修正转股价格"]
+    keywords = ["向下修正转股价格的公告", "转股价格调整的公告", "修正转股价格的公告"]
     records = []
     
     for kw in keywords:
         print(f"正在抓取关键字: [{kw}] ...")
-        for page in range(1, 12):
+        for page in range(1, 15):
             data = {
                 'pageNum': page,
                 'pageSize': 30,
@@ -97,6 +104,10 @@ def scrape_full_conv_price_history():
                         pub_ts = a.get('announcementTime', 0)
                         pdf_path = a.get('adjunctUrl', '')
                         
+                        # 过滤排除包含"不向下修正"等干扰标题
+                        if any(ex in title for ex in EXCLUDE_KEYWORDS):
+                            continue
+                            
                         if pub_ts > 0 and pdf_path:
                             pub_date = pd.to_datetime(pub_ts, unit='ms').strftime('%Y%m%d')
                             pdf_url = f"http://static.cninfo.com.cn/{pdf_path}"
@@ -118,21 +129,21 @@ def scrape_full_conv_price_history():
         return
         
     df_clean = df_raw.drop_duplicates(subset=['stk_code', 'pub_date', 'title']).sort_values(by=['stk_code', 'pub_date']).reset_index(drop=True)
-    print(f"全网共抓取到 {len(df_clean):,} 条转股价调整公告。开始解析 PDF 多阶价格与生效日...")
+    print(f"清洗非下修标题后，共保留 {len(df_clean):,} 条真实转股价调整公告。开始解析 PDF 多阶价格与生效日...")
     
     parsed_eff_dates = []
     parsed_prev_prices = []
     parsed_new_prices = []
     
-    # 抽取前 200 条进行深度 PDF 采样解析，其余填入规则推导
     for idx, row in df_clean.iterrows():
+        # 解析 PDF 抽样
         if idx < 200:
-            eff_d, p_prev, p_new = parse_cninfo_announcement_pdf(row['pdf_url'])
+            eff_d, p_prev, p_new = parse_cninfo_announcement_pdf(row['pdf_url'], row['pub_date'])
         else:
             eff_d, p_prev, p_new = None, None, None
             
-        # 若未成功提取生效日，按 A 股规则：公告日次日生效
-        if not eff_d:
+        # 若未成功提取生效日或生效日非法，按 A 股规则：公告日次日生效
+        if not eff_d or eff_d < row['pub_date']:
             pub_dt = pd.to_datetime(row['pub_date'])
             eff_d = (pub_dt + pd.Timedelta(days=1)).strftime('%Y%m%d')
             
@@ -147,10 +158,13 @@ def scrape_full_conv_price_history():
     df_clean['prev_conv_price'] = parsed_prev_prices
     df_clean['new_conv_price'] = parsed_new_prices
     
-    # 格式清理
+    # 格式清理与类型转换
     df_clean['stk_code'] = df_clean['stk_code'].astype(str).str.zfill(6)
     df_clean['effective_date'] = pd.to_numeric(df_clean['effective_date'], errors='coerce')
     df_clean['pub_date'] = pd.to_numeric(df_clean['pub_date'], errors='coerce')
+    
+    # 强制校验合规性: effective_date 必须 >= pub_date
+    df_clean['effective_date'] = np.where(df_clean['effective_date'] >= df_clean['pub_date'], df_clean['effective_date'], df_clean['pub_date'] + 1)
     
     out_csv = r"D:\CB_mins_data\cb_conv_price_history.csv"
     out_csv_repo = r"c:\Users\liuqi\quant_system_v2\artifacts\cb_conv_price_history.csv"
