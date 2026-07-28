@@ -49,12 +49,13 @@ def build_unified_feature_matrix(df_15m, mins_data_dir=r"D:\CB_mins_data", data_
     
     df_pit = df_pit.merge(daily_stk[['ts_code', 'date_str', 'stk_mom_20d']], on=['ts_code', 'date_str'], how='left')
     
-    # (B) 转债 20 日日均振幅 (cb_amp_20d)
+    # (B) 转债 20 日日均振幅 (cb_amp_20d) - 严格跨日 T-1 平移 (shift 1)，防止盘中看到当天全天收盘高低价
     daily_cb_amp = df_pit.groupby(['ts_code', 'date_str']).apply(
         lambda g: (g['high'].max() - g['low'].min()) / g['close'].mean() if g['close'].mean() > 0 else np.nan
     ).reset_index(name='daily_amp')
     daily_cb_amp.sort_values(by=['ts_code', 'date_str'], inplace=True)
-    daily_cb_amp['cb_amp_20d'] = daily_cb_amp.groupby('ts_code')['daily_amp'].transform(lambda x: x.rolling(20, min_periods=5).mean())
+    daily_cb_amp['cb_amp_20d_raw'] = daily_cb_amp.groupby('ts_code')['daily_amp'].transform(lambda x: x.rolling(20, min_periods=5).mean())
+    daily_cb_amp['cb_amp_20d'] = daily_cb_amp.groupby('ts_code')['cb_amp_20d_raw'].shift(1)
     
     df_pit = df_pit.merge(daily_cb_amp[['ts_code', 'date_str', 'cb_amp_20d']], on=['ts_code', 'date_str'], how='left')
     
@@ -94,9 +95,9 @@ def build_unified_feature_matrix(df_15m, mins_data_dir=r"D:\CB_mins_data", data_
         df_pit['amount'] / (df_pit['vol'] * 100.0), np.nan
     )
 
-    # 5. 计算盘内 60 分钟 (4 个 15m Bar) 前瞻收益率目标 fwd_rtn_60m
+    # 5. 计算盘内 60 分钟 (4 个 15m Bar) 前瞻收益率目标 fwd_rtn_60m (严格限制在同日内 groupby(['ts_code', 'date_int'])，杜绝隔夜跳空跳空干扰)
     df_pit.sort_values(by=['ts_code', 'date_int', 'time_str'], inplace=True)
-    df_pit['fwd_rtn_60m'] = df_pit.groupby('ts_code')['close'].shift(-4) / df_pit['close'] - 1.0
+    df_pit['fwd_rtn_60m'] = df_pit.groupby(['ts_code', 'date_int'])['close'].shift(-4) / df_pit['close'] - 1.0
 
     logger.info(f"扩展版统一特征矩阵构建完成，总记录数: {len(df_pit):,}, 因子总数: {len(FEATURE_COLS)}")
     return df_pit
