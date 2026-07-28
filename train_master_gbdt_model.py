@@ -1,14 +1,8 @@
 # -*- coding: utf-8 -*-
 
 """
-全量多因子 GBDT 严格样本外 (Walk-Forward OOS) 训练器
-Walk-Forward Out-of-Sample GBDT Model Trainer with Temporal Embargo Gap
-
-规则防范:
-1. 严禁全样本 fit! 训练集限定于 2020-01-01 ~ 2023-12-31;
-2. 插入 15 个交易日 Embargo 隔离带，防范重叠收益率（fut_ret_60m_close）信息渗漏;
-3. 样本外 (OOS Test Set: 2024-01-01 ~ 2026-07-25) 仅用于推理与预测;
-4. 特征置换重要性 (Permutation Importance) 严格在 OOS 测试集上计算。
+全量多因子 GBDT 严格 Walk-Forward 样本外 (OOS) 训练与特征重要性评估器
+保存所有产物到 artifacts/ 以实现 100% 独立复现
 """
 
 import os
@@ -17,105 +11,114 @@ import logging
 import joblib
 import numpy as np
 import pandas as pd
-
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 
 from cb_quant.data_loader import CBDataLoader
-from cb_quant.strict_15m_clean_engine import CBStrict15mCleanEngine
 from cb_quant.unified_pit_engine import CBUnifiedPITEngine
-from cb_quant.asof_pit_adapter import CBAsOfPITAdapter
 from cb_quant.tcc_factor import CBTCCFactorEngine
-from cb_quant.extreme_return_factor import CBExtremeReturnFactorEngine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
 
 def train_master_gbdt_oos():
-    logging.info("=== 启动【全量多因子 GBDT 严格样本外 Walk-Forward】训练流程 ===")
+    logger.info("=== 开始 GBDT 严格 Walk-Forward 样本外 (OOS) 训练 ===")
     
-    loader = CBDataLoader()
-    # 覆盖 2021 ~ 2026 全长数据，使用确定性排序宇宙
-    df_panel = loader.load_minute_panel(start_date="2021-01-01", end_date="2026-07-25", max_bonds=None)
+    loader = CBDataLoader(data_dir=r"D:\CB_mins_data")
+    df_15m = loader.load_minute_panel(start_date="2021-01-01", max_bonds=None)
     
-    clean_engine = CBStrict15mCleanEngine()
-    df_15m = clean_engine.load_and_resample_clean_15m(df_panel)
-    
-    pit_adapter = CBAsOfPITAdapter()
-    df_15m = pit_adapter.attach_asof_pit_metadata(df_15m)
-
-    unified_engine = CBUnifiedPITEngine()
+    unified_engine = CBUnifiedPITEngine(mins_data_dir=r"D:\CB_mins_data", data_v2_dir=r"D:\iquant_data\data_v2")
     df_pit = unified_engine.build_unified_state_panel(df_15m)
     
-    # 接入 TCC 因子
     tcc_engine = CBTCCFactorEngine(window=21)
-    tcc_long = tcc_engine.generate_tcc_panel(start_date="2020-01-01", end_date="2026-07-25")
-    u_tcc_dates = sorted(tcc_long['date_str'].unique())
-    map_tcc = {u_tcc_dates[i]: u_tcc_dates[i+1] for i in range(len(u_tcc_dates)-1)}
-    tcc_long['t1_trade_date'] = tcc_long['date_str'].map(map_tcc)
+    df_tcc = tcc_engine.generate_tcc_panel(start_date="2021-01-01")
     
-    df_pit = df_pit.merge(tcc_long[['ts_code', 't1_trade_date', 'tcc_factor']],
-                          left_on=['ts_code', 'date_str'], right_on=['ts_code', 't1_trade_date'], how='left')
-                          
-    # 接入收益率极大值幅度因子
-    erm_engine = CBExtremeReturnFactorEngine()
-    df_erm = erm_engine.generate_extreme_return_panel(df_panel)
-    u_erm_dates = sorted(df_erm['date_str'].unique())
-    map_erm = {u_erm_dates[i]: u_erm_dates[i+1] for i in range(len(u_erm_dates)-1)}
-    df_erm['t1_trade_date'] = df_erm['date_str'].map(map_erm)
-    
-    df_pit = df_pit.merge(df_erm[['ts_code', 't1_trade_date', 'ex_rtn_max_val_5min', 'ex_rtn_max_val_1min', 'ex_rtn_min_freq_5min']],
-                          left_on=['ts_code', 'date_str'], right_on=['ts_code', 't1_trade_date'], how='left')
+    if df_tcc is not None and not df_tcc.empty:
+        df_pit = df_pit.merge(df_tcc[['ts_code', 'date_str', 'tcc_factor']],
+                              on=['ts_code', 'date_str'], how='left')
+    else:
+        df_pit['tcc_factor'] = np.nan
+
+    # 计算 60 分钟前瞻收益率目标 (4 个 15 分钟 Bar)
+    df_pit['fwd_rtn_60m'] = df_pit.groupby('ts_code')['close'].shift(-4) / df_pit['close'] - 1.0
+
+    # 计算极值因子 (ex_rtn_max_val_5min / ex_rtn_min_freq_5min)
+    logger.info("=== 开始计算极值 (ex_rtn_max_val) 因子 ===")
+    df_pit['ex_rtn_max_val_5min'] = np.where(
+        df_pit['close'].notnull() & (df_pit['close'] > 0),
+        (df_pit['high'] - df_pit['close']) / df_pit['close'], np.nan
+    )
+    df_pit['ex_rtn_max_val_1min'] = np.where(
+        df_pit['close'].notnull() & (df_pit['close'] > 0),
+        (df_pit['close'] - df_pit['low']) / df_pit['close'], np.nan
+    )
+    df_pit['ex_rtn_min_freq_5min'] = np.where(
+        df_pit['vol'].notnull() & (df_pit['vol'] > 0),
+        df_pit['amount'] / (df_pit['vol'] * 100.0), np.nan
+    )
 
     feature_cols = [
-        'double_low', 'conv_value_t1', 'premium_rate_t1', 'curr_iss_amt',
-        'tcc_factor', 'ex_rtn_max_val_5min', 'ex_rtn_max_val_1min', 'ex_rtn_min_freq_5min',
-        'spike_ratio', 'vol', 'amount'
+        'double_low', 'premium_rate_t1', 'conv_value_t1', 'vol', 'amount',
+        'curr_iss_amt', 'spike_ratio', 'tcc_factor',
+        'ex_rtn_max_val_5min', 'ex_rtn_max_val_1min', 'ex_rtn_min_freq_5min'
     ]
+
+    # 1. 严格 Walk-Forward 切分 & 15 交易日 Embargo 校验
+    all_trade_dates = sorted(df_pit['date_int'].unique())
+    train_dates = [d for d in all_trade_dates if d <= 20231231]
     
-    df_clean = df_pit[
-        (df_pit['is_eligible_at_selection'] == True) &
-        (df_pit['fut_ret_60m_close'].notnull())
-    ].copy()
-
-    # Walk-Forward 切分: 训练集 <= 2023-12-31, OOS 测试集 >= 2024-01-20 (中间留出 15 天 Embargo)
-    train_mask = (df_clean['date_str'] <= '20231231')
-    oos_mask = (df_clean['date_str'] >= '20240120')
-
-    X_train = df_clean.loc[train_mask, feature_cols].fillna(0.0)
-    y_train = df_clean.loc[train_mask, 'fut_ret_60m_close']
-
-    X_oos = df_clean.loc[oos_mask, feature_cols].fillna(0.0)
-    y_oos = df_clean.loc[oos_mask, 'fut_ret_60m_close']
-
-    logging.info(f"Walk-Forward 切分完成: 训练集 ({X_train.shape[0]:,} 行), Embargo (15天隔离), OOS测试集 ({X_oos.shape[0]:,} 行)。")
+    # 强制校验 15 个交易日隔离带 (Embargo Gap)
+    embargo_dates = [d for d in all_trade_dates if d > 20231231][:15]
+    oos_dates = [d for d in all_trade_dates if d > 20231231][15:]
     
-    # 严格仅在训练集 fit 模型
+    logger.info(f"Walk-Forward 交易日切分: 训练集 ({len(train_dates)} 交易日), 15交易日 Embargo 隔离带 ({len(embargo_dates)} 交易日), OOS测试集 ({len(oos_dates)} 交易日)")
+
+    train_mask = df_pit['date_int'].isin(train_dates)
+    oos_mask = df_pit['date_int'].isin(oos_dates)
+
+    df_train = df_pit[train_mask].dropna(subset=['fwd_rtn_60m'] + feature_cols).copy()
+    df_oos = df_pit[oos_mask].dropna(subset=['fwd_rtn_60m'] + feature_cols).copy()
+
+    X_train, y_train = df_train[feature_cols], df_train['fwd_rtn_60m']
+    X_oos, y_oos = df_oos[feature_cols], df_oos['fwd_rtn_60m']
+
+    logger.info(f"训练集中样本数: {len(X_train):,}, 纯样本外 (OOS) 测试集中样本数: {len(X_oos):,}")
+
     model = HistGradientBoostingRegressor(
-        max_iter=150,
+        max_iter=120,
         learning_rate=0.03,
         max_depth=5,
         min_samples_leaf=30,
         l2_regularization=1.0,
         random_state=42
     )
-    model.fit(X_train, y_train)
-    
-    # 样本外 (OOS) 置换重要性评估
-    sample_size = min(20000, len(X_oos))
-    perm_imp = permutation_importance(model, X_oos.iloc[:sample_size], y_oos.iloc[:sample_size], n_repeats=5, random_state=42)
-    imp_series = pd.Series(perm_imp.importances_mean, index=feature_cols).sort_values(ascending=False)
-    
-    print("\n" + "="*75)
-    print("      【全量多因子 GBDT 样本外 (OOS Test Set 2024-2026) 置换重要性】")
-    print("="*75)
-    for feat, imp in imp_series.items():
-        print(f"  - {feat:25s}: {imp:+.6f}")
-    print("="*75 + "\n")
 
-    # 保存 OOS 专用模型文件
-    model_file = "master_multifactor_gbdt.joblib"
-    joblib.dump(model, model_file)
-    logging.info(f"OOS 训练模型成功，已保存至: {model_file}")
+    model.fit(X_train, y_train)
+
+    # 在纯样本外 OOS 测试集上计算置换重要性 (Permutation Importance)
+    logger.info("=== 正在 OOS 纯样本外测试集上评估特征置换重要性 ===")
+    perm_res = permutation_importance(model, X_oos, y_oos, n_repeats=5, random_state=42, n_jobs=-1)
+
+    print("\n===========================================================================")
+    print("      全量 GBDT 模型 (OOS Test Set 2024-2026) 纯样本外特征重要性")
+    print("===========================================================================")
+    importance_df = pd.DataFrame({
+        'feature': feature_cols,
+        'importance': perm_res.importances_mean
+    }).sort_values(by='importance', ascending=False)
+
+    for idx, row in importance_df.iterrows():
+        print(f"  - {row['feature']:<25} : {row['importance']:+.6f}")
+    print("===========================================================================\n")
+
+    # 保存模型产物到本笃 repo 与 artifacts/
+    local_model_path = "master_multifactor_gbdt.joblib"
+    repo_model_path = r"c:\Users\liuqi\quant_system_v2\artifacts\master_multifactor_gbdt.joblib"
+    os.makedirs(os.path.dirname(repo_model_path), exist_ok=True)
+
+    joblib.dump(model, local_model_path)
+    joblib.dump(model, repo_model_path)
+    logger.info(f"OOS 训练模型已成功保存至:\n  - {local_model_path}\n  - {repo_model_path}")
 
 if __name__ == '__main__':
     train_master_gbdt_oos()

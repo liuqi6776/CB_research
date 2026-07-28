@@ -51,95 +51,130 @@ class CBUnifiedPITEngine:
             call_info['call_date_clean'] = pd.to_numeric(call_info['call_date'], errors='coerce')
             df = df.merge(call_info[['ts_code', 'call_date_clean']], on='ts_code', how='left')
 
-        # 强赎与退市判定 (严格 PIT 逻辑: date_int >= call_date_clean - 5 或 delist_date 时判定不可交易)
+        # 强赎与退市判定 (严格 PIT 零时间倒退逻辑: date_int >= call_date_clean 当天或之后判定不可交易，严禁向前倒推 5 天)
         df['delist_date_clean'] = pd.to_numeric(df['delist_date'], errors='coerce') if 'delist_date' in df.columns else np.nan
-        # 强赎公告日前置 5 日防御规则，防止在强赎提示期误建仓
         df['is_redeemed'] = np.where(
-            df['call_date_clean'].notnull() & (df['date_int'] >= (df['call_date_clean'] - 5)), True,
+            df['call_date_clean'].notnull() & (df['date_int'] >= df['call_date_clean']), True,
             np.where(df['delist_date_clean'].notnull() & (df['date_int'] >= df['delist_date_clean']), True, False)
         )
 
         # 3. 接入 D:\iquant_data\data_v2 真实 T-1 正股日线收盘价 (stk_close_t1)
         day_files = sorted(glob.glob(os.path.join(self.data_v2_dir, "data_day1", "*.parquet")))
-        valid_day_files = day_files
         
-        if valid_day_files and 'stk_code' in df.columns:
+        if day_files and 'stk_code' in df.columns:
             day_dfs = []
-            for f in valid_day_files:
+            for f in day_files:
                 try:
                     df_sub = pd.read_parquet(f, columns=['ts_code', 'trade_date', 'close'])
                     day_dfs.append(df_sub)
                 except Exception:
                     pass
             if day_dfs:
-                stk_daily = pd.concat(day_dfs, ignore_index=True)
-                stk_daily.rename(columns={'ts_code': 'stk_code', 'close': 'stk_close_t1'}, inplace=True)
-                stk_daily['trade_date_str'] = stk_daily['trade_date'].astype(str)
-                stk_daily = stk_daily.sort_values(by=['stk_code', 'trade_date_str']).reset_index(drop=True)
-                # T-1 对齐: 下一交易日 t1_date_str 使用的是上一个交易日的 stk_close_t1
-                stk_daily['t1_date_str'] = stk_daily.groupby('stk_code')['trade_date_str'].shift(-1)
+                stk_day = pd.concat(day_dfs, ignore_index=True)
+                stk_day.rename(columns={'close': 'stk_close', 'trade_date': 'stk_trade_date'}, inplace=True)
+                stk_day['stk_trade_date'] = pd.to_numeric(stk_day['stk_trade_date'], errors='coerce')
                 
-                for drop_col in ['stk_close_t1', 't1_date_str']:
-                    if drop_col in df.columns:
-                        df.drop(columns=[drop_col], inplace=True)
+                trade_dates = sorted(stk_day['stk_trade_date'].unique())
+                t1_map = {trade_dates[i]: trade_dates[i-1] for i in range(1, len(trade_dates))}
+                df['t1_date_int'] = df['date_int'].map(t1_map)
+                df['stk_code_clean'] = df['stk_code'].astype(str).str.split('.').str[0].str.zfill(6)
+                stk_day['stk_code_clean'] = stk_day['ts_code'].astype(str).str.split('.').str[0].str.zfill(6)
+                
+                if 'stk_close_t1' in df.columns:
+                    df.drop(columns=['stk_close_t1'], inplace=True)
+                
+                df = df.merge(stk_day[['stk_code_clean', 'stk_trade_date', 'stk_close']], 
+                              left_on=['stk_code_clean', 't1_date_int'], 
+                              right_on=['stk_code_clean', 'stk_trade_date'], 
+                              how='left')
+                df.rename(columns={'stk_close': 'stk_close_t1'}, inplace=True)
+                if 'stk_code_clean' in df.columns:
+                    df.drop(columns=['stk_code_clean'], inplace=True)
 
-                df = df.merge(stk_daily[['stk_code', 't1_date_str', 'stk_close_t1']], 
-                              left_on=['stk_code', 'date_str'], right_on=['stk_code', 't1_date_str'], how='left')
-
-        if 'stk_close_t1' not in df.columns:
-            df['stk_close_t1'] = np.nan
-
-        # 3-B. 接入正股日频筹码与成本分布因子 (daily_chip.parquet)
-        chip_path = "daily_chip.parquet"
-        if os.path.exists(chip_path) and 'stk_code' in df.columns:
+        # 3-B. 接入筹码分布与游资量化特征 (D:\iquant_data\chip_distribution_t1)
+        chip_dir = os.path.join(self.mins_data_dir, "..", "chip_distribution_t1")
+        if os.path.exists(chip_dir) and 'stk_code' in df.columns:
             try:
-                df_chip = pd.read_parquet(chip_path)
-                df_chip['trade_date_str'] = df_chip['trade_date'].astype(str)
-                df_chip.rename(columns={'ts_code': 'stk_code'}, inplace=True)
-                # T-1 筹码分布对齐: t1_date_str
-                df_chip['t1_date_str'] = df_chip.groupby('stk_code')['trade_date_str'].shift(-1)
-                
-                chip_cols = ['chip_profit_ratio', 'chip_concentration_90', 'chip_position_20d']
-                for c in chip_cols:
-                    if c in df.columns:
-                        df.drop(columns=[c], inplace=True)
-                
-                df = df.merge(df_chip[['stk_code', 't1_date_str'] + chip_cols],
-                              left_on=['stk_code', 'date_str'], right_on=['stk_code', 't1_date_str'], how='left')
+                chip_files = sorted(glob.glob(os.path.join(chip_dir, "*.parquet")))
+                if chip_files:
+                    df_chip = pd.read_parquet(chip_files[0])
+                    chip_cols = [c for c in ['winner_ratio', 'chip_density', 'retail_heat'] if c in df_chip.columns]
+                    for c in chip_cols:
+                        if c in df.columns:
+                            df.drop(columns=[c], inplace=True)
+                    
+                    df = df.merge(df_chip[['stk_code', 't1_date_str'] + chip_cols],
+                                  left_on=['stk_code', 'date_str'], right_on=['stk_code', 't1_date_str'], how='left')
             except Exception as e:
                 logger.warning(f"筹码因子合并失败: {e}")
 
-        # 1-B. 接入真实全网历史转股价调整事件表 (cb_conv_price_history.csv)
+        # 1-B. 接入真实全网多阶历史转股价变动事件表 (cb_conv_price_history.csv) 并使用 merge_asof 匹配
         hist_adj_path = os.path.join(self.mins_data_dir, "cb_conv_price_history.csv")
+        if not os.path.exists(hist_adj_path):
+            hist_adj_path = os.path.join(os.path.dirname(__file__), "..", "artifacts", "cb_conv_price_history.csv")
+            
         if os.path.exists(hist_adj_path) and 'stk_code' in df.columns:
             try:
                 df_adj_hist = pd.read_csv(hist_adj_path)
                 df_adj_hist['stk_code_clean'] = df_adj_hist['stk_code'].astype(str).str.split('.').str[0].str.zfill(6)
-                df_adj_hist['pub_date_int'] = pd.to_numeric(df_adj_hist['pub_date'], errors='coerce')
-                min_adj_date = df_adj_hist.groupby('stk_code_clean')['pub_date_int'].min().reset_index()
-                min_adj_date.rename(columns={'pub_date_int': 'first_adj_pub_date'}, inplace=True)
+                df_adj_hist['eff_date_int'] = pd.to_numeric(df_adj_hist['effective_date'], errors='coerce')
+                
+                # 过滤有效多阶价格记录
+                df_adj_valid = df_adj_hist.dropna(subset=['eff_date_int', 'new_conv_price']).copy()
+                df_adj_valid.sort_values(by=['stk_code_clean', 'eff_date_int'], inplace=True)
+                
+                # 为每只股票增加首次生效日期标识
+                min_eff = df_adj_valid.groupby('stk_code_clean')['eff_date_int'].min().reset_index()
+                min_eff.rename(columns={'eff_date_int': 'first_eff_date'}, inplace=True)
                 
                 df['stk_code_clean'] = df['stk_code'].astype(str).str.split('.').str[0].str.zfill(6)
-                if 'first_adj_pub_date' in df.columns:
-                    df.drop(columns=['first_adj_pub_date'], inplace=True)
-                df = df.merge(min_adj_date, on='stk_code_clean', how='left')
+                if 'first_eff_date' in df.columns:
+                    df.drop(columns=['first_eff_date'], inplace=True)
+                df = df.merge(min_eff, on='stk_code_clean', how='left')
+                
+                df['date_int'] = df['date_int'].astype(np.int64)
+                df_adj_valid['eff_date_int'] = df_adj_valid['eff_date_int'].astype(np.int64)
+                
+                # 执行 merge_asof: 按 date_int >= eff_date_int 匹配当时实际生效的转股价 asof_conv_price
+                df_sorted = df.sort_values(by=['date_int']).reset_index()
+                df_adj_valid_sorted = df_adj_valid[['stk_code_clean', 'eff_date_int', 'new_conv_price']].sort_values(by=['eff_date_int']).reset_index(drop=True)
+                
+                merged_asof = pd.merge_asof(
+                    df_sorted,
+                    df_adj_valid_sorted,
+                    left_on='date_int',
+                    right_on='eff_date_int',
+                    by='stk_code_clean',
+                    direction='backward'
+                )
+                merged_asof.sort_values(by='index', inplace=True)
+                merged_asof.set_index('index', inplace=True)
+                df = merged_asof
+                df.rename(columns={'new_conv_price': 'asof_conv_price'}, inplace=True)
+                
                 if 'stk_code_clean' in df.columns:
                     df.drop(columns=['stk_code_clean'], inplace=True)
             except Exception as e:
-                logger.warning(f"合并历史转股价调整事件表失败: {e}")
+                logger.warning(f"多阶历史转股价 merge_asof 匹配失败: {e}")
 
         # 4. 严禁任何 .fillna() 默认放行补齐！缺失即判定无效！
         stk_c = pd.to_numeric(df['stk_close_t1'], errors='coerce') if 'stk_close_t1' in df.columns else pd.Series(np.nan, index=df.index)
         latest_conv_px = pd.to_numeric(df['conv_price'], errors='coerce') if 'conv_price' in df.columns else pd.Series(np.nan, index=df.index)
         first_conv_px = pd.to_numeric(df['first_conv_price'], errors='coerce') if 'first_conv_price' in df.columns else latest_conv_px
+        asof_conv_px = pd.to_numeric(df['asof_conv_price'], errors='coerce') if 'asof_conv_price' in df.columns else pd.Series(np.nan, index=df.index)
         
-        # PIT 无前视转股价 As-Of 逻辑:
-        # 若样本日期 date_int 小于首次下修公告日 first_adj_pub_date，表明下修尚未发生，严格使用初始转股价 first_conv_price；
-        # 若样本日期 date_int >= first_adj_pub_date，表明下修已公告生效，使用更新后的转股价。
-        has_adj = df['first_adj_pub_date'].notnull() if 'first_adj_pub_date' in df.columns else pd.Series(False, index=df.index)
-        is_pre_adj = has_adj & (df['date_int'] < df['first_adj_pub_date'])
+        # 多阶 PIT 无前视转股价 As-Of 逻辑:
+        # 1) 若 date_int < first_eff_date (尚未发生任何下修)，严格使用初始转股价 first_conv_price；
+        # 2) 若 date_int >= eff_date，严格使用当时实际生效的 asof_conv_price (多阶准确转股价)；
+        # 3) 若未在事件表中，退回使用 latest_conv_px / first_conv_px。
+        has_first_eff = df['first_eff_date'].notnull() if 'first_eff_date' in df.columns else pd.Series(False, index=df.index)
+        is_pre_first_eff = has_first_eff & (df['date_int'] < df['first_eff_date'])
         
-        conv_px = np.where(is_pre_adj & first_conv_px.notnull() & (first_conv_px > 0), first_conv_px, latest_conv_px)
+        conv_px = np.where(
+            is_pre_first_eff & first_conv_px.notnull() & (first_conv_px > 0), first_conv_px,
+            np.where(asof_conv_px.notnull() & (asof_conv_px > 0), asof_conv_px,
+                     np.where(first_conv_px.notnull() & (first_conv_px > 0), first_conv_px, latest_conv_px))
+        )
         conv_px = pd.Series(conv_px, index=df.index)
         
         df['conv_value_t1'] = np.where(stk_c.notnull() & conv_px.notnull() & (conv_px > 0), 
