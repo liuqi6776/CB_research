@@ -66,9 +66,12 @@ While the factor research produced a negative alpha conclusion for this specific
 
 ---
 
-## 5. Next Research Directions / 后续研究方向建议
+## 6. Final Project Conclusion & Archival Decision / 最终研究结论与归档决议
 
-1. **Horizon Freeze**: Permanently freeze the 2024-2026 OOS period to prevent post-hoc parameter overfitting.
-2. **Lower Turnover Frequency**: Shift from intraday/daily rebalancing to monthly or bi-weekly rebalancing to minimize transaction friction erosion.
-3. **ETF Alpha Enhancement**: Transition from absolute return stock-picking to relative alpha enhancement against `511380.SH`.
-4. **Stock-Bond Arbitrage**: Explore high-frequency intra-day stock-bond hedging or basis arbitrage utilizing 1-minute order book data.
+> **Final Decision / 最终决议**: **Halt & Archive (暂停并归档)**  
+> **Rationale / 核心理由**: Although the Monthly Double-Low (Top 10) strategy achieved a +29.42% cumulative return (+2.44pp vs ETF), its **Sharpe ratio (0.91)** remains inferior to passive **511380.SH CB ETF (Sharpe 0.95)** with a higher max drawdown (-11.33% vs -9.85%). On a risk-adjusted return basis, active stock-picking does not offer a sufficient edge over passive ETF holding to justify strategy complexity and operational overhead.
+
+### Key Learnings & Assets / 核心收获与工程资产
+1. **Disciplined Failure / 理性止损**: Stopping strategy iteration when risk-adjusted alpha is negative prevents capital loss and overfitting.
+2. **Reusable Infrastructure / 可复用工程框架**: The zero-lookahead PIT engine, unified feature pipeline, 20 bps friction simulator, and pytest regression test suite are fully archived and ready for deployment in future quantitative research projects.
+
