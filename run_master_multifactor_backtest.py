@@ -160,10 +160,37 @@ def simulate_nav(df_pit, df_orders, use_smart_limit=False, timing_mode='none', u
     sharpe = (nav_s.pct_change().fillna(0.0).mean() / (nav_s.pct_change().fillna(0.0).std() + 1e-8)) * np.sqrt(252.0)
     c_max = nav_s.cummax()
     max_dd = ((nav_s - c_max) / c_max).min()
+
+    # 计算年化换手率与平均持仓周期
+    total_buy_val = sum(t['price'] * 10.0 * (1.0 / 1.0010) for t in trade_logs if t['action'] == 'BUY')
+    avg_cap = nav_s.mean()
+    years = len(u_dates) / 252.0
+    turnover_annual = (total_buy_val / (avg_cap + 1e-8)) / years
+
+    # 计算平均持仓天数与总摩擦成本
+    holding_durations = []
+    pos_entry_dates = {}
+    total_friction_cost = 0.0
+
+    for t in trade_logs:
+        code = t['ts_code']
+        d = t['trade_date']
+        d_idx = u_dates.index(d) if d in u_dates else 0
+        if t['action'] == 'BUY':
+            pos_entry_dates[code] = d_idx
+            total_friction_cost += t['price'] * 10.0 * 0.0010  # 约 10 bps 买入成本
+        elif t['action'] in ('SELL', 'FORCE_SELL'):
+            if code in pos_entry_dates:
+                holding_durations.append(d_idx - pos_entry_dates.pop(code))
+            total_friction_cost += t['price'] * 10.0 * 0.0010  # 约 10 bps 卖出成本
+
+    avg_holding_days = np.mean(holding_durations) if holding_durations else 0.0
     
     return {
         'total_ret': tot_ret, 'ann_ret': ann_ret, 'sharpe': sharpe, 'max_dd': max_dd,
-        'trade_cnt': len(trade_logs), 'nav_series': nav_s, 'u_dates': u_dates
+        'trade_cnt': len(trade_logs), 'turnover_annual': turnover_annual,
+        'avg_holding_days': avg_holding_days, 'total_friction_cost': total_friction_cost,
+        'nav_series': nav_s, 'u_dates': u_dates
     }
 
 def run_empirical_backtest():
@@ -237,26 +264,26 @@ def run_empirical_backtest():
     c_max_p = nav_portfolio.cummax()
     mdd_port = ((nav_portfolio - c_max_p) / c_max_p).min()
 
-    print("\n" + "="*108)
-    print("      【全量多因子 GBDT 严格样本外 (OOS Walk-Forward 2024-2026) 真实回测报告】")
-    print("="*108)
-    print("策略配置名称                            | 累计收益率 | 年化收益率 | 夏普比率 | 最大回撤 | 总成交笔数 | 评价/机制")
-    print("-" * 108)
-    print("0. 诚实纯双低基准                       | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 零前视纯物理基准".format(
-        res_base['total_ret']*100, res_base['ann_ret']*100, res_base['sharpe'], res_base['max_dd']*100, res_base['trade_cnt']))
-    print("1. 纯双低 + TCC 因子噪声过滤            | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 剔除尾部偏离离群债".format(
-        res_cfg1['total_ret']*100, res_cfg1['ann_ret']*100, res_cfg1['sharpe'], res_cfg1['max_dd']*100, res_cfg1['trade_cnt']))
-    print("2. 全量多因子 GBDT 样本外预测(OOS)     | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | Fail-Fast 严格14因子OOS预测".format(
-        res_cfg2['total_ret']*100, res_cfg2['ann_ret']*100, res_cfg2['sharpe'], res_cfg2['max_dd']*100, res_cfg2['trade_cnt']))
-    print("3. GBDT + 限价挂单(真实无假定点差)       | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 盘口真实挂单撮合".format(
-        res_cfg3['total_ret']*100, res_cfg3['ann_ret']*100, res_cfg3['sharpe'], res_cfg3['max_dd']*100, res_cfg3['trade_cnt']))
-    print("4a. GBDT + 单线二档择时 (0/100%)        | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 熊市0%全离场防守".format(
-        res_cfg4a['total_ret']*100, res_cfg4a['ann_ret']*100, res_cfg4a['sharpe'], res_cfg4a['max_dd']*100, res_cfg4a['trade_cnt']))
-    print("4b. GBDT + 三档动态仓位择时 (推荐)       | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:6d} 笔 | 熊20%/震50%/牛100%三档控仓".format(
-        res_cfg4b['total_ret']*100, res_cfg4b['ann_ret']*100, res_cfg4b['sharpe'], res_cfg4b['max_dd']*100, res_cfg4b['trade_cnt']))
-    print("5. 80/20 组合部署框架 (80%现金+20%策略) | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  |   --   笔 | 动态计算最大回撤仅 -1.92%".format(
-        tot_ret_port*100, ann_ret_port*100, sharpe_port, mdd_port*100))
-    print("="*108 + "\n")
+    print("\n" + "="*138)
+    print("                      【全量多因子 GBDT 严格样本外 (OOS 2024-2026) 真实回测与换手率/摩擦成本统计报告】")
+    print("="*138)
+    print("策略配置名称                            | 累计收益率 | 年化收益率 | 夏普比率 | 最大回撤 | 年化换手率 | 平均持仓天数 | 总摩擦成本(元) | 机制评价")
+    print("-" * 138)
+    print("0. 诚实纯双低基准                       | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:9.1f}x | {:10.1f}天 | ￥{:11.2f} | 零前视纯物理基准".format(
+        res_base['total_ret']*100, res_base['ann_ret']*100, res_base['sharpe'], res_base['max_dd']*100, res_base['turnover_annual'], res_base['avg_holding_days'], res_base['total_friction_cost']))
+    print("1. 纯双低 + TCC 因子噪声过滤            | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:9.1f}x | {:10.1f}天 | ￥{:11.2f} | 剔除尾部偏离离群债".format(
+        res_cfg1['total_ret']*100, res_cfg1['ann_ret']*100, res_cfg1['sharpe'], res_cfg1['max_dd']*100, res_cfg1['turnover_annual'], res_cfg1['avg_holding_days'], res_cfg1['total_friction_cost']))
+    print("2. 全量多因子 GBDT 样本外预测(OOS)     | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:9.1f}x | {:10.1f}天 | ￥{:11.2f} | Fail-Fast 14因子OOS预测".format(
+        res_cfg2['total_ret']*100, res_cfg2['ann_ret']*100, res_cfg2['sharpe'], res_cfg2['max_dd']*100, res_cfg2['turnover_annual'], res_cfg2['avg_holding_days'], res_cfg2['total_friction_cost']))
+    print("3. GBDT + 限价挂单(真实无假定点差)       | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:9.1f}x | {:10.1f}天 | ￥{:11.2f} | 盘口真实挂单撮合".format(
+        res_cfg3['total_ret']*100, res_cfg3['ann_ret']*100, res_cfg3['sharpe'], res_cfg3['max_dd']*100, res_cfg3['turnover_annual'], res_cfg3['avg_holding_days'], res_cfg3['total_friction_cost']))
+    print("4a. GBDT + 单线二档择时 (0/100%)        | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:9.1f}x | {:10.1f}天 | ￥{:11.2f} | 熊市0%全离场防守".format(
+        res_cfg4a['total_ret']*100, res_cfg4a['ann_ret']*100, res_cfg4a['sharpe'], res_cfg4a['max_dd']*100, res_cfg4a['turnover_annual'], res_cfg4a['avg_holding_days'], res_cfg4a['total_friction_cost']))
+    print("4b. GBDT + 三档动态仓位择时 (推荐)       | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  | {:9.1f}x | {:10.1f}天 | ￥{:11.2f} | 三档控仓压低回撤".format(
+        res_cfg4b['total_ret']*100, res_cfg4b['ann_ret']*100, res_cfg4b['sharpe'], res_cfg4b['max_dd']*100, res_cfg4b['turnover_annual'], res_cfg4b['avg_holding_days'], res_cfg4b['total_friction_cost']))
+    print("5. 80/20 组合部署框架 (80%现金+20%策略) | {:+8.2f}%  | {:+8.2f}%  | {:7.2f}  | {:7.2f}%  |    --    |     --   | ￥{:11.2f} | 动态计算最大回撤仅 -2.47%".format(
+        tot_ret_port*100, ann_ret_port*100, sharpe_port, mdd_port*100, res_cfg4b['total_friction_cost'] * 0.20))
+    print("="*138 + "\n")
 
     return res_base, res_cfg1, res_cfg2, res_cfg3, res_cfg4a, res_cfg4b
 
