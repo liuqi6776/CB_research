@@ -77,7 +77,7 @@ def simulate_nav(df_pit, df_orders, use_smart_limit=False, timing_mode='none', u
                     max_positions_limit = 2
                     capital_multiplier = 0.20
 
-        # 变现强赎退市标的
+        # 变现强赎退市标的 (扣除 10 bps 卖出交易成本)
         d_dict_last = d_by_code_all.get(d_str, {})
         d_dict_first = d_first_all.get(d_str, {})
         
@@ -93,8 +93,9 @@ def simulate_nav(df_pit, df_orders, use_smart_limit=False, timing_mode='none', u
         for code in to_sell_force:
             pos_info = positions.pop(code)
             last_p = d_dict_last[code]['close'] if code in d_dict_last else pos_info['cost_price']
-            capital += pos_info['shares'] * last_p
-            trade_logs.append({'trade_date': d_str, 'ts_code': code, 'action': 'FORCE_SELL', 'price': last_p})
+            actual_sell_p = last_p * 0.9990  # 扣除 10 bps 卖出发起成本
+            capital += pos_info['shares'] * actual_sell_p
+            trade_logs.append({'trade_date': d_str, 'ts_code': code, 'action': 'FORCE_SELL', 'price': actual_sell_p})
 
         # 调仓卖出超出限制或不再合规的持仓
         if d_str in orders_by_date:
@@ -106,24 +107,41 @@ def simulate_nav(df_pit, df_orders, use_smart_limit=False, timing_mode='none', u
             
             for code in list(positions.keys()):
                 if code not in buy_targets or len(positions) > max_positions_limit:
-                    if code in d_dict_first:
+                    if code in d_dict_first and d_dict_first[code].get('is_executable_at_fill', True):
                         sell_p = d_dict_first[code]['open']
-                        pos_info = positions.pop(code)
-                        capital += pos_info['shares'] * sell_p
-                        trade_logs.append({'trade_date': d_str, 'ts_code': code, 'action': 'SELL', 'price': sell_p})
+                        if sell_p > 0 and not np.isnan(sell_p):
+                            actual_sell_p = sell_p * 0.9990  # 扣除 10 bps 卖出交易成本
+                            pos_info = positions.pop(code)
+                            capital += pos_info['shares'] * actual_sell_p
+                            trade_logs.append({'trade_date': d_str, 'ts_code': code, 'action': 'SELL', 'price': actual_sell_p})
 
-            # 买入新选出的标的
+            # 动态计算当前组合总权益 (包含已有持仓按最新价计算)，实现复利加仓/缩减
+            current_portfolio_equity = capital
+            for c_pos, p_info in positions.items():
+                c_p = d_dict_first[c_pos]['open'] if c_pos in d_dict_first else p_info['cost_price']
+                current_portfolio_equity += p_info['shares'] * c_p
+
+            # 买入新选出的标的 (动态权益分配 + 5% 成交量容量上限 + 10 bps 买入成本)
             if buy_targets and capital_multiplier > 0:
-                allocated_cap_per_bond = (1000000.0 * capital_multiplier) / max(10, len(buy_targets))
+                allocated_cap_per_bond = (current_portfolio_equity * capital_multiplier) / max(10, len(buy_targets))
                 for code in buy_targets:
                     if code not in positions and len(positions) < max_positions_limit:
-                        if code in d_dict_first:
+                        if code in d_dict_first and d_dict_first[code].get('is_executable_at_fill', True):
                             buy_p = d_dict_first[code]['open']
-                            shares = int(allocated_cap_per_bond / (buy_p * 10.0)) * 10
-                            if shares >= 10 and capital >= shares * buy_p:
-                                capital -= shares * buy_p
-                                positions[code] = {'shares': shares, 'cost_price': buy_p}
-                                trade_logs.append({'trade_date': d_str, 'ts_code': code, 'action': 'BUY', 'price': buy_p})
+                            bar_vol = d_dict_first[code].get('vol', 0.0)  # 15m 成交量 (手, 1手=10张)
+                            
+                            if buy_p > 0 and not np.isnan(buy_p):
+                                actual_buy_p = buy_p * 1.0010  # 增加 10 bps 买入佣金与点差成本
+                                desired_shares = int(allocated_cap_per_bond / (actual_buy_p * 10.0)) * 10
+                                
+                                # 严格执行 5% 15分钟 K线容量上限 (bar_vol * 10 * 0.05 张)
+                                max_allowed_shares = int(bar_vol * 0.5) * 10
+                                actual_shares = min(desired_shares, max_allowed_shares)
+                                
+                                if actual_shares >= 10 and capital >= actual_shares * actual_buy_p:
+                                    capital -= actual_shares * actual_buy_p
+                                    positions[code] = {'shares': actual_shares, 'cost_price': actual_buy_p}
+                                    trade_logs.append({'trade_date': d_str, 'ts_code': code, 'action': 'BUY', 'price': actual_buy_p})
 
         # 计算日终持仓市值与 NAV
         pos_val = 0.0
