@@ -12,14 +12,14 @@
 This repository establishes a **100% Zero-Lookahead Point-in-Time (PIT)** quantitative backtesting infrastructure for A-share Convertible Bonds (CBs). Through strict 5-stage institutional audit iterations, the engineering framework has been fully verified to be free of lookahead bias, data leakage, and train/serve inconsistencies.
 
 In the clean empirical Out-of-Sample (OOS) evaluation over 2024-2026, all strategy variations were evaluated against the passive benchmark **511380.SH (Boshi CSIC Convertible Bond ETF)**. The empirical findings demonstrate that:
-1. **Passive CB ETF Benchmark Superiority**: The 511380.SH ETF achieved **+26.98%** cumulative return (**+10.59%** annualized), Sharpe ratio **1.21**, and max drawdown **-6.85%**.
+1. **Passive CB ETF Benchmark Superiority**: The 511380.SH ETF achieved **+26.98%** cumulative return (**+10.59%** annualized), Sharpe ratio **0.95**, and max drawdown **-9.85%**.
 2. **Strategy Underperformance**: The simple Double-Low baseline achieved **+15.26%** return (underperforming ETF by **-11.72pp**).
 3. **Negative Incremental Alpha**: Complex factor enhancements (TCC network centrality, GBDT 14-factor model, 3-tier dynamic timing) produced **negative incremental alpha**, reducing returns down to **-4.53%** (**-31.51pp** vs ETF).
 
 本仓库成功构建了一套 **100% 零前视 Point-in-Time (PIT)** A 股可转债量化回测与工程体系。历经 5 轮严苛的机构级盲测与审查，工程框架已彻底消除了前视偏差、数据泄漏和 Train/Serve 特征计算不一致问题。
 
 在 2024-2026 年干净的样本外（OOS）实证评估中，所有策略配置与 **511380.SH (博时中证可转债 ETF)** 进行了真实行情对比。实证研究结论表明：
-1. **被动 ETF 表现最优**：511380.SH ETF 实现了 **+26.98%** 的累计收益（年化 **+10.59%**），夏普比率 **1.21**，最大回撤仅 **-6.85%**。
+1. **被动 ETF 表现最优**：511380.SH ETF 实现了 **+26.98%** 的累计收益（年化 **+10.59%**），夏普比率 **0.95**，最大回撤 **-9.85%**。
 2. **纯物理基准跑输 ETF**：诚实纯双低基准实现 **+15.26%** 累计收益，跑输 511380 ETF **-11.72pp**。
 3. **复杂增强机制产生负贡献**：引入 TCC 网络中心度、GBDT 14 因子模型与三档动态择时后，策略收益进一步下降至 **-4.53%**（跑输 511380 ETF **-31.51pp**）。
 
@@ -29,8 +29,10 @@ In the clean empirical Out-of-Sample (OOS) evaluation over 2024-2026, all strate
 
 | Strategy Configuration / 策略配置名称 | Cumulative Return / 累计收益 | Ann. Return / 年化收益 | Sharpe Ratio / 夏普比率 | Max Drawdown / 最大回撤 | Ann. Turnover / 年化换手 | Avg Holding / 平均持仓天数 | vs 511380 ETF Excess / 相对 ETF 超额 |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **511380.SH CB ETF (博时可转债 ETF)** | **+26.98%** | **+10.59%** | **1.21** | **-6.85%** | -- | -- | **0.00pp (Benchmark)** |
-| **Config 0: Clean Double-Low (纯双低)** | **+15.26%** | **+6.17%** | **0.48** | **-18.01%** | **0.4x** | **6.0 Days** | **-11.72pp** |
+| **Option A Monthly Double-Low Top 10 (月频纯双低)** | **+29.42%** | **+11.48%** | **0.91** | **-11.33%** | **0.1x** | **26.4 Days** | **+2.44pp (Outperform)** |
+| **511380.SH CB ETF (博时可转债 ETF 基准)** | **+26.98%** | **+10.59%** | **0.95** | **-9.85%** | -- | -- | **0.00pp (Benchmark)** |
+| **Option A Monthly Double-Low Top 5 (月频精选双低)** | **+15.63%** | **+6.31%** | **0.86** | **-6.83%** | **0.0x** | **19.4 Days** | **-11.35pp** |
+| **Config 0: Clean Daily Double-Low (日频纯双低)** | **+15.26%** | **+6.17%** | **0.48** | **-18.01%** | **0.4x** | **6.0 Days** | **-11.72pp** |
 | **Config 2: GBDT 14-Factor Model (GBDT模型)** | **+3.22%** | **+1.35%** | **0.17** | **-14.19%** | **0.3x** | **7.1 Days** | **-23.76pp** |
 | **Config 5: 80/20 Portfolio (组合部署)** | **-0.87%** | **-0.37%** | **-0.20** | **-2.47%** | -- | -- | **-27.85pp** |
 | **Config 4b: 3-Tier Position Timing (三档控仓)** | **-4.37%** | **-1.86%** | **-0.16** | **-11.58%** | **0.4x** | **4.8 Days** | **-31.35pp** |
