@@ -50,12 +50,17 @@ def is_limit_down(row, code=None):
     limit = 0.198 if (code.startswith('30') or code.startswith('68')) else 0.098
     return row['next_open'] <= row['close'] * (1 - limit)
 
-def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=True):
-    print(f"\n>>> Running Simulation (Options Filter: {use_options_filter}) ...", flush=True)
+def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=True, zero_fee=False):
+    print(f"\n>>> Running Simulation (Options Filter: {use_options_filter}, Zero Fee: {zero_fee}) ...", flush=True)
+    
+    buy_fee = 0.0 if zero_fee else BUY_COST_RATE
+    sell_fee = 0.0 if zero_fee else SELL_COST_RATE
     
     current_holdings = {}  # {ts_code: {'val': val, 'buy_price': buy_price, 'is_first_day': bool}}
     cash = INITIAL_CAPITAL
     daily_navs = []
+    total_traded_value = 0.0  # 单边交易额累计 (RMB)
+    rebalance_count = 0
     
     for idx, dt in enumerate(trade_dates):
         if dt not in df_by_date:
@@ -78,7 +83,6 @@ def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_
                         pct_chg = 0.0
                     
                     if prev_item['is_first_day']:
-                        # 买入首日：使用 收盘价 / 买入开盘价 乘以初始买入市值
                         close_price = day_prices[code]['close']
                         buy_price = prev_item['buy_price']
                         if buy_price > 0:
@@ -86,7 +90,6 @@ def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_
                         else:
                             val = prev_val * (1 + pct_chg)
                     else:
-                        # 后续持仓日：使用 pct_chg (昨收 -> 今收) 更新
                         val = prev_val * (1 + pct_chg)
                         
                     updated_holdings[code] = {
@@ -96,7 +99,6 @@ def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_
                     }
                     holdings_val += val
                 else:
-                    # 停牌：市值保持不变，is_first_day 状态也保留
                     updated_holdings[code] = {
                         'val': prev_val,
                         'buy_price': prev_item['buy_price'],
@@ -153,19 +155,22 @@ def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_
                     sell_candidates.append(code)
             
             # B. 恐慌状态：不买新仓，只保留被迫持仓
+            rebalance_count += 1
             if is_panic:
                 for code in sell_candidates:
                     val = current_holdings[code]['val']
-                    cost = val * SELL_COST_RATE
+                    cost = val * sell_fee
                     cash += (val - cost)
+                    total_traded_value += val
                 current_holdings = forced_holdings
                 continue
                 
             # C. 正常调仓：卖出可卖仓位
             for code in sell_candidates:
                 val = current_holdings[code]['val']
-                cost = val * SELL_COST_RATE
+                cost = val * sell_fee
                 cash += (val - cost)
+                total_traded_value += val
                 
             # 选股与买入
             candidates = day_data[day_data['pred_score'].notna()].copy()
@@ -208,7 +213,8 @@ def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_
                 if len(selected_codes) > 0:
                     buy_value_per_stock = cash / len(selected_codes)
                     for code, buy_price in selected_codes:
-                        cost = buy_value_per_stock * BUY_COST_RATE
+                        cost = buy_value_per_stock * buy_fee
+                        total_traded_value += buy_value_per_stock
                         new_holdings[code] = {
                             'val': buy_value_per_stock - cost,
                             'buy_price': buy_price,
@@ -222,6 +228,15 @@ def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_
     nav_df = pd.DataFrame(daily_navs)
     nav_df['trade_date'] = pd.to_datetime(nav_df['trade_date'])
     nav_df = nav_df.set_index('trade_date')
+    
+    # 计算换手率指标
+    n_years = len(nav_df) / 252.0
+    mean_nav = nav_df['nav'].mean()
+    # 单边换手率 (Single-side Turnover Rate) = 累计交易额 / 2 / 平均NAV / 年数
+    single_turnover_annual = (total_traded_value / 2.0 / mean_nav) / n_years if n_years > 0 else 0.0
+    nav_df.attrs['single_turnover_annual'] = single_turnover_annual
+    nav_df.attrs['rebalance_count'] = rebalance_count
+    nav_df.attrs['total_traded_value'] = total_traded_value
     return nav_df
 
 def compute_metrics(nav_series, name):
@@ -273,10 +288,11 @@ def run_backtest(pred_file=PRED_FILE, results_dir=RESULTS_DIR, save_plot=True):
     df_by_date = {dt: g for dt, g in df.groupby('trade_date')}
     
     # 1. 运行纯多因子策略 (No Options Filter)
-    nav_pure = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=False)
+    nav_pure = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=False, zero_fee=False)
+    nav_pure_gross = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=False, zero_fee=True)
     
     # 2. 运行期权风控大闸策略 (With Options Filter)
-    nav_hedged = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=True)
+    nav_hedged = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=True, zero_fee=False)
     
     # 3. 获取等权基准净值
     bench_returns = df.groupby('trade_date')['pct_chg'].mean().fillna(0.0)
@@ -305,17 +321,37 @@ def run_backtest(pred_file=PRED_FILE, results_dir=RESULTS_DIR, save_plot=True):
     nav_hedged['csi1000'] = csi1000_nav.reindex(nav_hedged.index).ffill()
     
     # 4. 计算并展示绩效指标
-    metrics_pure = compute_metrics(nav_pure['nav'], 'Strategy (Pure Multi-Factor)')
-    metrics_hedged = compute_metrics(nav_hedged['nav'], 'Strategy (Options Wind-Control)')
+    metrics_pure_gross = compute_metrics(nav_pure_gross['nav'], 'Strategy Pure (Gross, Zero Fee)')
+    metrics_pure = compute_metrics(nav_pure['nav'], 'Strategy Pure (Net, Fee Included)')
+    metrics_hedged = compute_metrics(nav_hedged['nav'], 'Strategy Options (Net)')
     metrics_bench = compute_metrics(nav_pure['benchmark'], 'Benchmark (Market Equal-Weight)')
     metrics_csi1000 = compute_metrics(nav_pure['csi1000'], 'Benchmark (CSI 1000 Index)')
     
-    summary_df = pd.DataFrame([metrics_pure, metrics_hedged, metrics_bench, metrics_csi1000])
+    summary_df = pd.DataFrame([metrics_pure_gross, metrics_pure, metrics_hedged, metrics_bench, metrics_csi1000])
+    
+    # 换手率与成本拖累审计 (Turnover & Cost Drag Audit)
+    single_turnover = nav_pure.attrs.get('single_turnover_annual', 0.0)
+    gross_cagr = metrics_pure_gross['cagr_raw']
+    net_cagr = metrics_pure['cagr_raw']
+    csi_cagr = metrics_csi1000['cagr_raw']
+    
+    cost_drag = gross_cagr - net_cagr
+    gross_alpha = gross_cagr - csi_cagr
+    cost_drag_ratio = (cost_drag / gross_alpha * 100.0) if abs(gross_alpha) > 1e-4 else 0.0
     
     print("\n==========================================================================")
     print("                     Multi-Factor Strategy A/B Comparison                 ")
     print("==========================================================================")
     print(summary_df[['Portfolio', 'Total Return', 'CAGR', 'Volatility', 'Sharpe', 'Max Drawdown']].to_string(index=False))
+    print("==========================================================================")
+    print(f"\n[Turnover & Cost Drag Audit Report (G2 Compliance)]")
+    print(f"Annualized Single-Side Turnover:  {single_turnover:.2f}x / year")
+    print(f"Annualized Gross Return (0 Fee):  {gross_cagr:+.2%}")
+    print(f"Annualized Net Return (Net Fee):  {net_cagr:+.2%}")
+    print(f"Annualized Cost Drag:             {cost_drag:+.2%}")
+    print(f"Cost Drag / Gross Alpha Ratio:    {cost_drag_ratio:.1f}%")
+    if cost_drag > 0.10 or (gross_alpha > 0 and cost_drag_ratio > 50.0):
+        print("[RED FLAG TRIGGERED] Cost drag exceeds 10%/year or > 50% of gross alpha!")
     print("==========================================================================")
     
     # 保存数据结果
