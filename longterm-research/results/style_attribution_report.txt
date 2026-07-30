@@ -2,17 +2,19 @@
                        Strategy Style Attribution Report                  
 ==========================================================================
 Backtest Period: 20220104 to 20260311 (1011 trading days)
+Block-Bootstrap Sharpe Ratio (20-day blocks): 0.4325 [95% CI: -0.4190, 1.5289]
 ==========================================================================
 
-[Model 1: Market & Size Factor Regression (Standard)]
+[Model 1: Market & Size Factor Regression]
 Formula: R_strategy = alpha + beta_m * R_m + beta_s * SMB + e
 --------------------------------------------------------------------------
 Daily Alpha (Intercept): +0.000152
 Annualized Alpha:        +3.83%
-t-statistic of Alpha:    0.8274 (NOT SIGNIFICANT)
-p-value of Alpha:        0.408185
-Beta Market (beta_m):    0.6769 (t-stat: 46.17)
-Beta Size (beta_s):      0.2139 (t-stat: 11.58)
+Naive OLS Alpha t-stat:  0.8274
+HAC Newey-West Alpha t: 0.8855 (NOT SIGNIFICANT)
+HAC Newey-West p-val:   0.375871
+Beta Market (beta_m):    0.6769 (HAC t-stat: 26.25)
+Beta Size (beta_s):      0.2139 (HAC t-stat: 3.06)
 R-squared:               0.7626 (Style explains 76.26% of variance)
 
 ==========================================================================
@@ -21,36 +23,36 @@ Formula: R_strategy = alpha + beta_m * R_m + beta_s * SMB + sum(beta_i * (R_ind_
 --------------------------------------------------------------------------
 Daily Alpha (Intercept): +0.000123
 Annualized Alpha:        +3.10%
-t-statistic of Alpha:    0.6410 (NOT SIGNIFICANT)
-p-value of Alpha:        0.521716
-Beta Market (beta_m):    0.7426 (t-stat: 31.22)
-Beta Size (beta_s):      0.1817 (t-stat: 3.20)
+Naive OLS Alpha t-stat:  0.6410
+HAC Newey-West Alpha t: 0.5972 (NOT SIGNIFICANT)
+HAC Newey-West p-val:   0.550369
+Beta Market (beta_m):    0.7426 (HAC t-stat: 31.46)
+Beta Size (beta_s):      0.1817 (HAC t-stat: 2.38)
 R-squared:               0.8127 (Style explains 81.27% of variance)
 
-Significant Active Industry Exposures (p < 0.05):
-  - 中成药: beta = -0.0868 (t-stat: -2.28, p-val: 0.0229)
-  - 仓储物流: beta = -0.0715 (t-stat: -2.06, p-val: 0.0396)
-  - 保险: beta = +0.0606 (t-stat: 3.38, p-val: 0.0007)
-  - 全国地产: beta = -0.0820 (t-stat: -2.29, p-val: 0.0224)
-  - 其他商业: beta = -0.0500 (t-stat: -2.31, p-val: 0.0209)
-  - 出版业: beta = -0.0487 (t-stat: -2.20, p-val: 0.0280)
-  - 半导体: beta = -0.0649 (t-stat: -2.73, p-val: 0.0064)
-  - 商品城: beta = -0.0347 (t-stat: -2.00, p-val: 0.0463)
-  - 商贸代理: beta = +0.0922 (t-stat: 3.13, p-val: 0.0018)
-  - 旅游景点: beta = -0.0461 (t-stat: -2.17, p-val: 0.0303)
-  - 水泥: beta = -0.0950 (t-stat: -3.09, p-val: 0.0021)
-  - 汽车配件: beta = -0.1350 (t-stat: -2.29, p-val: 0.0223)
-  - 环境保护: beta = -0.1226 (t-stat: -2.57, p-val: 0.0102)
-  - 电气设备: beta = -0.1505 (t-stat: -2.32, p-val: 0.0204)
-  - 白酒: beta = -0.0425 (t-stat: -1.99, p-val: 0.0465)
-  - 石油开采: beta = -0.0442 (t-stat: -2.05, p-val: 0.0409)
-  - 种植业: beta = -0.0506 (t-stat: -2.65, p-val: 0.0082)
-  - 证券: beta = -0.0998 (t-stat: -3.25, p-val: 0.0012)
-  - 路桥: beta = +0.0941 (t-stat: 2.78, p-val: 0.0055)
-  - 软件服务: beta = -0.0802 (t-stat: -2.02, p-val: 0.0434)
-  - 软饮料: beta = +0.0544 (t-stat: 2.22, p-val: 0.0266)
-  - 通信设备: beta = -0.0999 (t-stat: -2.44, p-val: 0.0149)
-  - 食品: beta = -0.1010 (t-stat: -2.01, p-val: 0.0453)
+Significant Active Industry Exposures (HAC p < 0.05):
+  - 中成药: beta = -0.0868 (t-stat: -2.41, p-val: 0.0160)
+  - 仓储物流: beta = -0.0715 (t-stat: -2.46, p-val: 0.0141)
+  - 保险: beta = +0.0606 (t-stat: 2.85, p-val: 0.0043)
+  - 全国地产: beta = -0.0820 (t-stat: -2.46, p-val: 0.0138)
+  - 其他商业: beta = -0.0500 (t-stat: -2.22, p-val: 0.0264)
+  - 出版业: beta = -0.0487 (t-stat: -2.24, p-val: 0.0250)
+  - 半导体: beta = -0.0649 (t-stat: -3.44, p-val: 0.0006)
+  - 商品城: beta = -0.0347 (t-stat: -2.00, p-val: 0.0452)
+  - 商贸代理: beta = +0.0922 (t-stat: 2.53, p-val: 0.0113)
+  - 旅游景点: beta = -0.0461 (t-stat: -2.82, p-val: 0.0048)
+  - 水泥: beta = -0.0950 (t-stat: -2.94, p-val: 0.0033)
+  - 环境保护: beta = -0.1226 (t-stat: -2.79, p-val: 0.0053)
+  - 电气设备: beta = -0.1505 (t-stat: -2.46, p-val: 0.0139)
+  - 白酒: beta = -0.0425 (t-stat: -2.09, p-val: 0.0368)
+  - 种植业: beta = -0.0506 (t-stat: -2.68, p-val: 0.0073)
+  - 证券: beta = -0.0998 (t-stat: -3.41, p-val: 0.0006)
+  - 超市连锁: beta = +0.0353 (t-stat: 2.17, p-val: 0.0303)
+  - 路桥: beta = +0.0941 (t-stat: 3.28, p-val: 0.0011)
+  - 软件服务: beta = -0.0802 (t-stat: -2.03, p-val: 0.0423)
+  - 软饮料: beta = +0.0544 (t-stat: 2.60, p-val: 0.0094)
+  - 通信设备: beta = -0.0999 (t-stat: -2.94, p-val: 0.0033)
+  - 食品: beta = -0.1010 (t-stat: -2.39, p-val: 0.0168)
 
 ==========================================================================
                    Year-by-Year Strategy Performance                      

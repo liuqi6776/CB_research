@@ -109,18 +109,41 @@ def run_attribution():
     for col in ind_cols:
         df_reg[col] = df_reg[col] - df_reg['R_m']
         
-    # 4. 执行 OLS 回归
+    # 4. 执行 OLS 与 HAC (Newey-West) 回归
     y = df_reg['Strategy_Ret']
     
     # A. Model 1: 仅考虑 市场(R_m) + 市值(SMB)
     X1 = df_reg[['R_m', 'SMB']]
     X1 = sm.add_constant(X1)
-    model1 = sm.OLS(y, X1).fit()
+    model1_ols = sm.OLS(y, X1).fit()
+    model1_hac = sm.OLS(y, X1).fit(cov_type='HAC', cov_kwds={'maxlags': 20})
     
     # B. Model 2: 考虑 市场(R_m) + 市值(SMB) + 行业超额因子 (控制了多重共线性)
     X2 = df_reg[['R_m', 'SMB'] + ind_cols]
     X2 = sm.add_constant(X2)
-    model2 = sm.OLS(y, X2).fit()
+    model2_ols = sm.OLS(y, X2).fit()
+    model2_hac = sm.OLS(y, X2).fit(cov_type='HAC', cov_kwds={'maxlags': 20})
+    
+    # Block-Bootstrap Sharpe CI (20-day overlapping holding block)
+    def calc_block_bootstrap_sharpe_ci(returns, block_size=20, n_bootstraps=1000, seed=42):
+        np.random.seed(seed)
+        n = len(returns)
+        n_blocks = int(np.ceil(n / block_size))
+        blocks = [returns.values[i:i+block_size] for i in range(0, n - block_size + 1)]
+        if not blocks:
+            return 0.0, 0.0, 0.0
+        sharpes = []
+        for _ in range(n_bootstraps):
+            sampled_idx = np.random.choice(len(blocks), size=n_blocks, replace=True)
+            sample = np.concatenate([blocks[idx] for idx in sampled_idx])[:n]
+            std = np.std(sample, ddof=1)
+            sharpes.append((np.mean(sample) / std * np.sqrt(252)) if std > 1e-8 else 0.0)
+        mean_ret = np.mean(returns)
+        std_ret = np.std(returns, ddof=1)
+        pt_sharpe = (mean_ret / std_ret * np.sqrt(252)) if std_ret > 1e-8 else 0.0
+        return pt_sharpe, np.percentile(sharpes, 2.5), np.percentile(sharpes, 97.5)
+
+    sharpe_pt, sharpe_ci_low, sharpe_ci_high = calc_block_bootstrap_sharpe_ci(y, block_size=20)
     
     # 5. 输出报告
     report = []
@@ -128,26 +151,29 @@ def run_attribution():
     report.append("                       Strategy Style Attribution Report                  ")
     report.append("==========================================================================")
     report.append(f"Backtest Period: {start_date} to {end_date} ({len(df_reg)} trading days)")
+    report.append(f"Block-Bootstrap Sharpe Ratio (20-day blocks): {sharpe_pt:.4f} [95% CI: {sharpe_ci_low:.4f}, {sharpe_ci_high:.4f}]")
     report.append("==========================================================================")
     
-    report.append("\n[Model 1: Market & Size Factor Regression (Standard)]")
+    report.append("\n[Model 1: Market & Size Factor Regression]")
     report.append(f"Formula: R_strategy = alpha + beta_m * R_m + beta_s * SMB + e")
     report.append("--------------------------------------------------------------------------")
     
-    alpha_m1 = model1.params['const']
+    alpha_m1 = model1_hac.params['const']
     alpha_ann_m1 = alpha_m1 * 252
-    t_alpha_m1 = model1.tvalues['const']
-    p_alpha_m1 = model1.pvalues['const']
-    beta_m_m1 = model1.params['R_m']
-    beta_s_m1 = model1.params['SMB']
-    r2_m1 = model1.rsquared
+    t_alpha_m1_ols = model1_ols.tvalues['const']
+    t_alpha_m1_hac = model1_hac.tvalues['const']
+    p_alpha_m1_hac = model1_hac.pvalues['const']
+    beta_m_m1 = model1_hac.params['R_m']
+    beta_s_m1 = model1_hac.params['SMB']
+    r2_m1 = model1_hac.rsquared
     
     report.append(f"Daily Alpha (Intercept): {alpha_m1:+.6f}")
     report.append(f"Annualized Alpha:        {alpha_ann_m1:+.2%}")
-    report.append(f"t-statistic of Alpha:    {t_alpha_m1:.4f} " + ("(SIGNIFICANT)" if abs(t_alpha_m1) >= 1.96 else "(NOT SIGNIFICANT)"))
-    report.append(f"p-value of Alpha:        {p_alpha_m1:.6f}")
-    report.append(f"Beta Market (beta_m):    {beta_m_m1:.4f} (t-stat: {model1.tvalues['R_m']:.2f})")
-    report.append(f"Beta Size (beta_s):      {beta_s_m1:.4f} (t-stat: {model1.tvalues['SMB']:.2f})")
+    report.append(f"Naive OLS Alpha t-stat:  {t_alpha_m1_ols:.4f}")
+    report.append(f"HAC Newey-West Alpha t: {t_alpha_m1_hac:.4f} " + ("(SIGNIFICANT)" if abs(t_alpha_m1_hac) >= 1.96 else "(NOT SIGNIFICANT)"))
+    report.append(f"HAC Newey-West p-val:   {p_alpha_m1_hac:.6f}")
+    report.append(f"Beta Market (beta_m):    {beta_m_m1:.4f} (HAC t-stat: {model1_hac.tvalues['R_m']:.2f})")
+    report.append(f"Beta Size (beta_s):      {beta_s_m1:.4f} (HAC t-stat: {model1_hac.tvalues['SMB']:.2f})")
     report.append(f"R-squared:               {r2_m1:.4f} (Style explains {r2_m1:.2%} of variance)")
     
     report.append("\n==========================================================================")
@@ -155,29 +181,31 @@ def run_attribution():
     report.append(f"Formula: R_strategy = alpha + beta_m * R_m + beta_s * SMB + sum(beta_i * (R_ind_i - R_m)) + e")
     report.append("--------------------------------------------------------------------------")
     
-    alpha_m2 = model2.params['const']
+    alpha_m2 = model2_hac.params['const']
     alpha_ann_m2 = alpha_m2 * 252
-    t_alpha_m2 = model2.tvalues['const']
-    p_alpha_m2 = model2.pvalues['const']
-    beta_m_m2 = model2.params['R_m']
-    beta_s_m2 = model2.params['SMB']
-    r2_m2 = model2.rsquared
+    t_alpha_m2_ols = model2_ols.tvalues['const']
+    t_alpha_m2_hac = model2_hac.tvalues['const']
+    p_alpha_m2_hac = model2_hac.pvalues['const']
+    beta_m_m2 = model2_hac.params['R_m']
+    beta_s_m2 = model2_hac.params['SMB']
+    r2_m2 = model2_hac.rsquared
     
     report.append(f"Daily Alpha (Intercept): {alpha_m2:+.6f}")
     report.append(f"Annualized Alpha:        {alpha_ann_m2:+.2%}")
-    report.append(f"t-statistic of Alpha:    {t_alpha_m2:.4f} " + ("(SIGNIFICANT)" if abs(t_alpha_m2) >= 1.96 else "(NOT SIGNIFICANT)"))
-    report.append(f"p-value of Alpha:        {p_alpha_m2:.6f}")
-    report.append(f"Beta Market (beta_m):    {beta_m_m2:.4f} (t-stat: {model2.tvalues['R_m']:.2f})")
-    report.append(f"Beta Size (beta_s):      {beta_s_m2:.4f} (t-stat: {model2.tvalues['SMB']:.2f})")
+    report.append(f"Naive OLS Alpha t-stat:  {t_alpha_m2_ols:.4f}")
+    report.append(f"HAC Newey-West Alpha t: {t_alpha_m2_hac:.4f} " + ("(SIGNIFICANT)" if abs(t_alpha_m2_hac) >= 1.96 else "(NOT SIGNIFICANT)"))
+    report.append(f"HAC Newey-West p-val:   {p_alpha_m2_hac:.6f}")
+    report.append(f"Beta Market (beta_m):    {beta_m_m2:.4f} (HAC t-stat: {model2_hac.tvalues['R_m']:.2f})")
+    report.append(f"Beta Size (beta_s):      {beta_s_m2:.4f} (HAC t-stat: {model2_hac.tvalues['SMB']:.2f})")
     report.append(f"R-squared:               {r2_m2:.4f} (Style explains {r2_m2:.2%} of variance)")
     
-    # 提取显著的行业主动偏离暴露 (p < 0.05)
-    report.append("\nSignificant Active Industry Exposures (p < 0.05):")
+    # 提取显著的行业主动偏离暴露 (HAC p < 0.05)
+    report.append("\nSignificant Active Industry Exposures (HAC p < 0.05):")
     sig_inds = []
     for col in ind_cols:
-        p_val = model2.pvalues[col]
-        beta_val = model2.params[col]
-        t_val = model2.tvalues[col]
+        p_val = model2_hac.pvalues[col]
+        beta_val = model2_hac.params[col]
+        t_val = model2_hac.tvalues[col]
         if p_val < 0.05:
             sig_inds.append(f"  - {col}: beta = {beta_val:+.4f} (t-stat: {t_val:.2f}, p-val: {p_val:.4f})")
     if sig_inds:
@@ -214,8 +242,8 @@ def run_attribution():
     print(f"Saved attribution report to {REPORT_FILE}")
     
     # 7. 计算纯 Alpha 曲线 (Cumulative Residual Return)
-    # 使用 Model 2 的残差来绘制纯净超额收益
-    df_reg['Residual'] = model2.resid
+    # 使用 Model 2 (HAC) 的残差来绘制纯净超额收益
+    df_reg['Residual'] = model2_hac.resid
     df_reg['Alpha_NAV'] = (1 + df_reg['Residual']).cumprod()
     
     # 绘图
