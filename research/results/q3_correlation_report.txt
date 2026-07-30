@@ -1,0 +1,50 @@
+==========================================================================
+     Q3 Report: Cross-Asset Correlation Matrix & 40/40/20 Portfolio      
+==========================================================================
+Sample Period: 2014-10-21 to 2026-03-13 (2770 trading days)
+==========================================================================
+
+[1. Full-Sample Daily Return Correlation Matrix]
+--------------------------------------------------------------------------
+               Stock_HS300  Stock_ZZ1000  CB_Index  Treasury_Bond
+Stock_HS300       1.000000      0.767449  0.712023      -0.016946
+Stock_ZZ1000      0.767449      1.000000  0.614938      -0.026371
+CB_Index          0.712023      0.614938  1.000000       0.027491
+Treasury_Bond    -0.016946     -0.026371  0.027491       1.000000
+
+==========================================================================
+[2. Stress-Period Correlation Analysis (Stock vs Treasury & CB)]
+--------------------------------------------------------------------------
+
+--- 2015 Crash (2015-06-01 to 2015-12-31, N=146) ---
+Stock_ZZ1000 vs Treasury_Bond Corr: +0.0016
+Stock_ZZ1000 vs CB_Index Corr:      +0.6777
+CB_Index vs Treasury_Bond Corr:      +0.0686
+
+--- 2018 Bear (2018-01-01 to 2018-12-31, N=243) ---
+Stock_ZZ1000 vs Treasury_Bond Corr: +0.0797
+Stock_ZZ1000 vs CB_Index Corr:      +0.7036
+CB_Index vs Treasury_Bond Corr:      +0.0392
+
+--- 2022 Drawdown (2022-01-01 to 2022-12-31, N=242) ---
+Stock_ZZ1000 vs Treasury_Bond Corr: -0.1009
+Stock_ZZ1000 vs CB_Index Corr:      +0.7741
+CB_Index vs Treasury_Bond Corr:      +0.0336
+
+--- 2024 Squeeze (2024-01-01 to 2024-03-31, N=58) ---
+Stock_ZZ1000 vs Treasury_Bond Corr: -0.2037
+Stock_ZZ1000 vs CB_Index Corr:      +0.8683
+CB_Index vs Treasury_Bond Corr:      -0.0808
+
+==========================================================================
+[3. Portfolio Backtest Comparison: 100% Stock vs 40/40/20 Diversified]
+--------------------------------------------------------------------------
+Portfolio Strategy             | Ann. Ret   | Ann. Vol   | Sharpe   | Max DD   
+--------------------------------------------------------------------------
+100% Stock (ZZ1000)            | +2.74%     | 27.52%     | 0.100    | -72.35%  
+40/40/20 (Stock/CB/Treasury)   | +4.44%     | 16.50%     | 0.269    | -51.61%  
+--------------------------------------------------------------------------
+Volatility Reduction: 27.52% -> 16.50% (Cut by 40.0%)
+Max Drawdown Improvement: -72.35% -> -51.61% (Cut by 28.7%)
+Sharpe Improvement: 0.100 -> 0.269 (+0.170)
+==========================================================================
