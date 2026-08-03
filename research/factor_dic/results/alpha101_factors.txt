@@ -1,0 +1,25 @@
+A1: IC=-0.0173 ICIR=-0.210 NWt=-1.69 pos=0.461 n=76 rho_ret=-0.111 rho_ivol=-0.044 rho_turn=-0.063
+A4: IC=0.0014 ICIR=0.014 NWt=0.11 pos=0.447 n=76 rho_ret=0.289 rho_ivol=-0.083 rho_turn=-0.007
+A6: IC=-0.0136 ICIR=-0.129 NWt=-1.18 pos=0.382 n=76 rho_ret=0.087 rho_ivol=-0.124 rho_turn=-0.043
+A12: IC=0.0249 ICIR=0.307 NWt=3.58 pos=0.658 n=76 rho_ret=0.145 rho_ivol=0.122 rho_turn=0.058
+A18: IC=-0.0284 ICIR=-0.373 NWt=-3.40 pos=0.355 n=76 rho_ret=-0.336 rho_ivol=-0.107 rho_turn=-0.214
+A31: IC=-0.0058 ICIR=-0.051 NWt=-0.37 pos=0.513 n=76 rho_ret=-0.461 rho_ivol=0.055 rho_turn=-0.048
+A53: IC=0.0119 ICIR=0.108 NWt=0.96 pos=0.539 n=76 rho_ret=0.046 rho_ivol=-0.016 rho_turn=-0.007
+A54: IC=-0.0032 ICIR=-0.032 NWt=-0.23 pos=0.474 n=76 rho_ret=0.088 rho_ivol=-0.102 rho_turn=-0.046
+A101: IC=-0.0056 ICIR=-0.043 NWt=-0.32 pos=0.487 n=76 rho_ret=-0.168 rho_ivol=0.011 rho_turn=0.006
+A102: IC=-0.0126 ICIR=-0.133 NWt=-1.16 pos=0.421 n=76 rho_ret=0.046 rho_ivol=-0.066 rho_turn=0.017
+C20: IC=-0.0215 ICIR=-0.246 NWt=-2.18 pos=0.408 n=76 rho_ret=-0.218 rho_ivol=-0.097 rho_turn=-0.451
+ILLIQ: IC=-0.1311 ICIR=-0.908 NWt=-7.59 pos=0.184 n=76 rho_ret=-0.048 rho_ivol=-0.363 rho_turn=-0.068
+BASE: cagr=0.0646 sharpe=0.384 exvETF=-0.1448 exvETF_timed=0.2079
+BASE+A1: cagr=0.0762 sharpe=0.433 exvETF=-0.0832 exvETF_timed=0.1242
+BASE+A4: cagr=0.0674 sharpe=0.395 exvETF=-0.1302 exvETF_timed=0.1647
+BASE+A6: cagr=0.0729 sharpe=0.413 exvETF=-0.1010 exvETF_timed=0.1674
+BASE+A12: cagr=0.0535 sharpe=0.336 exvETF=-0.2003 exvETF_timed=0.0416
+BASE+A18: cagr=0.0520 sharpe=0.336 exvETF=-0.2074 exvETF_timed=0.0710
+BASE+A31: cagr=0.0665 sharpe=0.396 exvETF=-0.1349 exvETF_timed=0.1022
+BASE+A53: cagr=0.0592 sharpe=0.360 exvETF=-0.1722 exvETF_timed=0.0865
+BASE+A54: cagr=0.0478 sharpe=0.315 exvETF=-0.2277 exvETF_timed=0.0660
+BASE+A101: cagr=0.0599 sharpe=0.363 exvETF=-0.1684 exvETF_timed=0.0371
+BASE+A102: cagr=0.0551 sharpe=0.342 exvETF=-0.1926 exvETF_timed=0.1760
+BASE+C20: cagr=0.0782 sharpe=0.445 exvETF=-0.0723 exvETF_timed=0.1354
+BASE+ILLIQ: cagr=-0.0194 sharpe=0.035 exvETF=-0.4954 exvETF_timed=-0.2780

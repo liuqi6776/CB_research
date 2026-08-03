@@ -1,0 +1,7 @@
+{
+  "panel_path": "C:\\Users\\liuqi\\quant_system_v2\\research\\studies\\study_007_cross_sectional\\fix\\data\\panel.parquet",
+  "funda_path": "C:\\Users\\liuqi\\quant_system_v2\\research\\studies\\study_007_cross_sectional\\fix\\data\\funda_pit.parquet",
+  "panel_rows": 7508971,
+  "funda_rows": 1015685,
+  "funda_asof_hits": 1007694
+}

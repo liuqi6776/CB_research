@@ -1,0 +1,2 @@
+PEG: IC=0.0225 ICIR=0.2079 NWt=1.80 pos=0.566
+PEG vs 小盘超额 rho=-0.535

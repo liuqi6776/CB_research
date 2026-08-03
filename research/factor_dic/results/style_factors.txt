@@ -1,0 +1,31 @@
+EP: IC=0.0473 ICIR=0.251 NWt=2.34 pos=0.605 n=76
+BP: IC=0.0744 ICIR=0.365 NWt=3.75 pos=0.645 n=76
+SP: IC=0.0561 ICIR=0.346 NWt=3.25 pos=0.618 n=76
+DP: IC=0.0491 ICIR=0.260 NWt=2.64 pos=0.632 n=76
+ROE: IC=0.0000 ICIR=0.000 NWt=0.00 pos=0.434 n=76
+GM: IC=-0.0261 ICIR=-0.274 NWt=-2.40 pos=0.421 n=76
+LEV: IC=-0.0176 ICIR=-0.166 NWt=-1.51 pos=0.434 n=76
+GROW: IC=0.0016 ICIR=0.014 NWt=0.12 pos=0.474 n=76
+SGROW: IC=0.0137 ICIR=0.125 NWt=1.09 pos=0.539 n=76
+VAL: IC=0.0706 ICIR=0.327 NWt=3.32 pos=0.618 n=76
+BASE: cagr=0.0646 sharpe=0.384 exvETF=-0.1448 exvETF_timed=0.2079
+BASE+EP: cagr=0.0553 sharpe=0.377 exvETF=-0.1914 exvETF_timed=0.1303
+BASE+BP: cagr=0.0833 sharpe=0.511 exvETF=-0.0437 exvETF_timed=0.4570
+BASE+SP: cagr=0.1142 sharpe=0.643 exvETF=0.1455 exvETF_timed=0.5037
+BASE+DP: cagr=0.0881 sharpe=0.526 exvETF=-0.0159 exvETF_timed=0.4190
+BASE+ROE: cagr=0.0121 sharpe=0.161 exvETF=-0.3817 exvETF_timed=-0.1708
+BASE+GM: cagr=0.0275 sharpe=0.232 exvETF=-0.3189 exvETF_timed=-0.0492
+BASE+LEV: cagr=0.0552 sharpe=0.337 exvETF=-0.1922 exvETF_timed=0.0245
+BASE+GROW: cagr=0.0613 sharpe=0.376 exvETF=-0.1617 exvETF_timed=0.1428
+BASE+SGROW: cagr=0.0771 sharpe=0.429 exvETF=-0.0781 exvETF_timed=0.1566
+BASE+VAL: cagr=0.0984 sharpe=0.583 exvETF=0.0452 exvETF_timed=0.4894
+EP: cagr=0.0237 sharpe=0.215 exvETF=-0.3348 exvETF_timed=-0.0162
+BP: cagr=0.0706 sharpe=0.438 exvETF=-0.1134 exvETF_timed=0.3398
+SP: cagr=0.0985 sharpe=0.568 exvETF=0.0456 exvETF_timed=0.2865
+DP: cagr=0.0776 sharpe=0.474 exvETF=-0.0755 exvETF_timed=0.3616
+ROE: cagr=-0.0303 sharpe=-0.025 exvETF=-0.5302 exvETF_timed=-0.2946
+GM: cagr=0.0371 sharpe=0.267 exvETF=-0.2771 exvETF_timed=-0.1256
+LEV: cagr=0.0640 sharpe=0.366 exvETF=-0.1479 exvETF_timed=-0.1438
+GROW: cagr=0.1019 sharpe=0.513 exvETF=0.0671 exvETF_timed=0.0874
+SGROW: cagr=0.0977 sharpe=0.478 exvETF=0.0408 exvETF_timed=0.1954
+VAL: cagr=0.1184 sharpe=0.662 exvETF=0.1734 exvETF_timed=0.4845

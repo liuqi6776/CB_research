@@ -50,8 +50,48 @@ def is_limit_down(row, code=None):
     limit = 0.198 if (code.startswith('30') or code.startswith('68')) else 0.098
     return row['next_open'] <= row['close'] * (1 - limit)
 
-def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=True, zero_fee=False):
-    print(f"\n>>> Running Simulation (Options Filter: {use_options_filter}, Zero Fee: {zero_fee}) ...", flush=True)
+def compute_target_weights(codes, day_data, weighting, max_stock_weight=0.05):
+    """计算买入权重。
+    - equal:   等权
+    - inv_vol: 波动率倒数加权 (1/volatility_20), 单票上限 max_stock_weight
+    - ind_rp:  行业风险平价: 行业等权分配, 行业内波动率倒数加权
+    """
+    n = len(codes)
+    if n == 0:
+        return np.array([])
+    if weighting == 'equal':
+        return np.ones(n) / n
+
+    vol = np.array([day_data.get(c, {}).get('volatility_20', np.nan) for c in codes], dtype=float)
+    med = np.nanmedian(vol) if np.nanmedian(vol) > 0 else 0.02
+    vol = np.where((vol <= 0) | np.isnan(vol), med, vol)
+
+    if weighting == 'inv_vol':
+        w = 1.0 / vol
+        # 单票权重上限后重新归一化 (迭代一次近似)
+        for _ in range(3):
+            w = np.minimum(w, w.sum() * max_stock_weight)
+            w = w / w.sum()
+        return w
+    elif weighting == 'ind_rp':
+        inds = [str(day_data.get(c, {}).get('industry', 'Unknown')) for c in codes]
+        uniq = sorted(set(inds))
+        w = np.zeros(n)
+        for ind in uniq:
+            idx = [i for i, x in enumerate(inds) if x == ind]
+            if idx:
+                inv = 1.0 / vol[idx]
+                inv = inv / inv.sum()
+                w[idx] = inv * (1.0 / len(uniq))
+        for _ in range(3):
+            w = np.minimum(w, w.sum() * max_stock_weight)
+            w = w / w.sum()
+        return w
+    else:
+        raise ValueError(f"Unknown weighting: {weighting}")
+
+def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=True, zero_fee=False, liquidity_q=0.0, weighting='equal'):
+    print(f"\n>>> Running Simulation (Options Filter: {use_options_filter}, Zero Fee: {zero_fee}, Liquidity Q: {liquidity_q}, Weighting: {weighting}) ...", flush=True)
     
     buy_fee = 0.0 if zero_fee else BUY_COST_RATE
     sell_fee = 0.0 if zero_fee else SELL_COST_RATE
@@ -183,6 +223,11 @@ def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_
                 (candidates['vol_next'] > 0) & 
                 (~candidates.apply(lambda r: is_limit_up(r, r['ts_code']), axis=1))
             ]
+            # 流动性过滤: 剔除当日成交额低于市场分位数 liquidity_q 的股票
+            if liquidity_q > 0.0:
+                threshold = day_data['amount'].quantile(liquidity_q) if 'amount' in day_data.columns else 0.0
+                if threshold > 0:
+                    candidates = candidates[candidates['amount'] >= threshold]
             candidates = candidates.sort_values(by='pred_score', ascending=False)
             
             selected_codes = []
@@ -211,12 +256,14 @@ def simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_
                 new_holdings = {code: item for code, item in forced_holdings.items()}
                 
                 if len(selected_codes) > 0:
-                    buy_value_per_stock = cash / len(selected_codes)
-                    for code, buy_price in selected_codes:
-                        cost = buy_value_per_stock * buy_fee
-                        total_traded_value += buy_value_per_stock
+                    codes = [c for c, _ in selected_codes]
+                    weights = compute_target_weights(codes, day_prices, weighting)
+                    for (code, buy_price), w in zip(selected_codes, weights):
+                        buy_value = cash * w
+                        cost = buy_value * buy_fee
+                        total_traded_value += buy_value
                         new_holdings[code] = {
-                            'val': buy_value_per_stock - cost,
+                            'val': buy_value - cost,
                             'buy_price': buy_price,
                             'is_first_day': True
                         }
@@ -267,13 +314,13 @@ def compute_metrics(nav_series, name):
         'max_dd_raw': max_dd
     }
 
-def run_backtest(pred_file=PRED_FILE, results_dir=RESULTS_DIR, save_plot=True):
+def run_backtest(pred_file=PRED_FILE, results_dir=RESULTS_DIR, save_plot=True, liquidity_q=0.0, weighting='equal'):
     print(f"Loading predictions from {pred_file}...", flush=True)
     pred_df = pd.read_parquet(pred_file)
     pred_df = pred_df.drop_duplicates(subset=['trade_date', 'ts_code'])
     
     print("Loading volume and option columns from features...", flush=True)
-    feat_df = pd.read_parquet(FEATURES_FILE, columns=['trade_date', 'ts_code', 'vol', 'opt_qvix_zscore', 'opt_pcr_vol_50'])
+    feat_df = pd.read_parquet(FEATURES_FILE, columns=['trade_date', 'ts_code', 'vol', 'opt_qvix_zscore', 'opt_pcr_vol_50', 'amount', 'volatility_20'])
     feat_df = feat_df.drop_duplicates(subset=['trade_date', 'ts_code'])
     
     df = pred_df.merge(feat_df, on=['trade_date', 'ts_code'], how='left')
@@ -288,11 +335,11 @@ def run_backtest(pred_file=PRED_FILE, results_dir=RESULTS_DIR, save_plot=True):
     df_by_date = {dt: g for dt, g in df.groupby('trade_date')}
     
     # 1. 运行纯多因子策略 (No Options Filter)
-    nav_pure = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=False, zero_fee=False)
-    nav_pure_gross = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=False, zero_fee=True)
+    nav_pure = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=False, zero_fee=False, liquidity_q=liquidity_q, weighting=weighting)
+    nav_pure_gross = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=False, zero_fee=True, liquidity_q=liquidity_q, weighting=weighting)
     
     # 2. 运行期权风控大闸策略 (With Options Filter)
-    nav_hedged = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=True, zero_fee=False)
+    nav_hedged = simulate_strategy(df, df_by_date, trade_dates, rebalance_dates, use_options_filter=True, zero_fee=False, liquidity_q=liquidity_q, weighting=weighting)
     
     # 3. 获取等权基准净值
     bench_returns = df.groupby('trade_date')['pct_chg'].mean().fillna(0.0)

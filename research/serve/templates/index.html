@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>量化策略 · 每日信号</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2233; --line:#2a3550; --txt:#e6ebf5; --sub:#8b98b5;
+          --green:#2fbf71; --red:#e05b5b; --amber:#e8a33d; --blue:#5b8def; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--txt); font-family:"Segoe UI","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:1180px; margin:0 auto; padding:20px 24px 60px; }
+  header { display:flex; align-items:baseline; justify-content:space-between; padding:18px 0 14px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:22px; font-weight:700; letter-spacing:.5px; }
+  header .meta { color:var(--sub); font-size:13px; }
+  .grid { display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-top:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .card h2 { font-size:14px; color:var(--sub); font-weight:600; margin-bottom:12px; letter-spacing:1px; }
+  .action-box { text-align:center; padding:22px 16px; }
+  .action-box .tag { display:inline-block; font-size:12px; padding:3px 10px; border-radius:20px; margin-bottom:10px; }
+  .action-box .big { font-size:26px; font-weight:800; line-height:1.4; }
+  .action-box .pos { margin-top:8px; font-size:14px; color:var(--sub); }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:16px; }
+  .metric { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:12px; text-align:center; }
+  .metric .k { font-size:12px; color:var(--sub); }
+  .metric .v { font-size:20px; font-weight:700; margin-top:4px; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:12px; font-size:12px; font-weight:600; }
+  .on  { background:rgba(47,191,113,.15); color:var(--green); }
+  .off { background:rgba(224,91,91,.15); color:var(--red); }
+  .w1 { color:var(--green); } .w5 { color:var(--amber); } .w0 { color:var(--red); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { color:var(--sub); font-weight:600; text-align:left; padding:8px 8px; border-bottom:1px solid var(--line); }
+  td { padding:7px 8px; border-bottom:1px solid #1f2940; }
+  .rank { color:var(--sub); width:44px; }
+  .num { font-variant-numeric:tabular-nums; }
+  .notes { font-size:12px; color:var(--amber); margin-top:12px; line-height:1.8; }
+  .note-dot::before { content:"⚠ "; }
+  img.chart { width:100%; border-radius:10px; margin-top:8px; }
+  .hist-wrap { max-height:420px; overflow:auto; }
+  .hist-row { display:flex; align-items:center; gap:10px; padding:9px 6px; border-bottom:1px solid #1f2940; font-size:13px; }
+  .hist-row .d { color:var(--sub); width:86px; flex:none; }
+  .hist-row .a { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .scroll { overflow-x:auto; }
+  .sub-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }
+  @media(max-width:900px){ .grid,.sub-grid{grid-template-columns:1fr;} .metrics{grid-template-columns:repeat(3,1fr);} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📈 量化策略 · 每日操作信号</h1>
+    <div class="meta" id="meta">加载中…</div>
+  </header>
+
+  <div class="grid">
+    <div class="card action-box">
+      <span class="tag" id="act-tag">…</span>
+      <div class="big" id="act-big">加载中…</div>
+      <div class="pos" id="act-pos"></div>
+      <div class="metrics">
+        <div class="metric"><div class="k">RS12 择时</div><div class="v" id="m-rs12">…</div></div>
+        <div class="metric"><div class="k">MA20 仓位</div><div class="v" id="m-w">…</div></div>
+        <div class="metric"><div class="k">持仓数</div><div class="v" id="m-n">…</div></div>
+        <div class="metric"><div class="k">调仓日</div><div class="v" id="m-rb">…</div></div>
+        <div class="metric"><div class="k">平均仓位(历史)</div><div class="v" id="m-avg">62%</div></div>
+        <div class="metric"><div class="k">回撤下限来源</div><div class="v" id="m-caveat" style="font-size:11px">RS12弱段持ETF</div></div>
+      </div>
+      <div class="notes" id="notes"></div>
+    </div>
+
+    <div class="card">
+      <h2>当前持有期候选组合 · Top 50</h2>
+      <div style="font-size:12px;color:var(--sub);margin-bottom:10px">这是调仓日已选好的股票候选名单（备选）。RS12 <b>强</b> 时按此清单买入；RS12 <b>弱</b> 时持有 512100 ETF、不买股票（以左侧今日操作为准）。</div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>#</th><th>代码</th><th>名称</th><th style="text-align:right">因子分</th></tr></thead>
+          <tbody id="picks"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="sub-grid">
+    <div class="card">
+      <h2>策略 vs ETF 净值 (2020-2026)</h2>
+      <img class="chart" src="/assets/nav_vs_etf.png" alt="nav vs etf">
+      <div style="font-size:12px;color:var(--sub);margin-top:8px">最优策略 BASE+VAL+RS12+MA20三档(0.98)：年化 32.28% / MaxDD 15.41% / 卡玛 2.10；512100 ETF：9.08% / 41.78%</div>
+    </div>
+    <div class="card">
+      <h2>历史信号记录 (近 90 天)</h2>
+      <div class="hist-wrap" id="hist"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+async function loadToday() {
+  const r = await fetch('/api/today');
+  if (!r.ok) { document.getElementById('act-big').textContent = '暂无信号，请先运行 daily_signal.py'; return; }
+  const d = await r.json();
+  const on = d.rs12_on;
+  document.getElementById('meta').textContent =
+    `数据截至 ${d.as_of_date} · 生成 ${d.generated_at} · 调仓日 ${d.rebalance_date}`;
+  const tag = document.getElementById('act-tag');
+  tag.textContent = on ? 'RS12 强 · 股票组合' : 'RS12 弱 · ETF 阶段';
+  tag.className = 'tag ' + (on ? 'on' : 'off');
+  document.getElementById('act-big').textContent = d.action;
+  document.getElementById('act-pos').textContent = d.position;
+  const w = d.ma20 ? d.ma20.weight : 1;
+  const wEl = document.getElementById('m-w');
+  wEl.textContent = on ? (w >= 1 ? '满仓 1.0' : w >= 0.5 ? '半仓 0.5' : '空仓 0') : '全额 ETF';
+  wEl.className = 'v ' + (on ? (w >= 1 ? 'w1' : w >= 0.5 ? 'w5' : 'w0') : 'w1');
+  document.getElementById('m-rs12').innerHTML = on ? '<span class="pill on">强</span>' : '<span class="pill off">弱</span>';
+  document.getElementById('m-n').textContent = d.picks_count;
+  document.getElementById('m-rb').textContent = d.rebalance_date;
+  const rows = d.picks.map((p, i) =>
+    `<tr><td class="rank">${i+1}</td><td class="num">${p.code}</td><td>${p.name||'—'}</td><td class="num" style="text-align:right">${p.score}</td></tr>`).join('');
+  document.getElementById('picks').innerHTML = rows;
+  const notes = (d.data_notes || []).map(n => `<div class="note-dot">${n}</div>`).join('');
+  document.getElementById('notes').innerHTML = notes;
+  if (d.ma20 && on) {
+    const m = d.ma20;
+    document.getElementById('act-pos').textContent += `  ·  close ${m.close} / MA20 ${m.ma20}`;
+  }
+}
+async function loadHist() {
+  const r = await fetch('/api/history?limit=90');
+  const list = await r.json();
+  document.getElementById('hist').innerHTML = list.map(d => `
+    <div class="hist-row">
+      <span class="d">${d.file_date}</span>
+      <span class="a">${d.action}</span>
+      <span class="pill ${d.rs12_on ? 'on' : 'off'}">${d.rs12_on ? '强' : '弱'}</span>
+      <span>${d.picks_count}只</span>
+    </div>`).join('') || '<div style="color:var(--sub);padding:10px">暂无历史</div>';
+}
+async function refresh() { await Promise.all([loadToday(), loadHist()]); }
+refresh();
+setInterval(refresh, 60000);  // 每 60s 自动刷新最新信号
+</script>
+</body>
+</html>

@@ -38,7 +38,8 @@ class Env:
     def __init__(self):
         self.trade_dates = rv.load_trade_dates()
         months = {d[:6]: d for d in self.trade_dates if d[:4] >= str(rv.START_YEAR)}
-        self.rebal = sorted(months.values())[:-1]
+        # 保留最后一个月 (数据可到 2026-07-31, 末尾月作为最新 OOS 样本纳入回测)
+        self.rebal = sorted(months.values())
         all_codes = set()
         for rb in self.rebal:
             m = rv.load_index_weight(rb)
@@ -103,7 +104,8 @@ class Env:
             fdf = pd.DataFrame(fvals).T
             zdf = fdf.apply(sf.winsorize_series).apply(
                 lambda s: (s - s.mean()) / (s.std() + 1e-8), axis=0)
-            cols = sf.BASE_COLS + ["VAL"]
+            # 可用因子列 (缺 VAL 快照的月份降级为 BASE 3 因子, 保证最新月仍纳入回测)
+            cols = [c for c in sf.BASE_COLS + ["VAL"] if c in zdf.columns]
             has = zdf[cols].dropna()
             if len(has) < TOP_N:
                 continue
@@ -114,10 +116,13 @@ class Env:
         """逐月 yield (rb, rb_next, hold, picks, comb, e_ret, rs12_on)"""
         for i, rb in enumerate(self.rebal):
             if i + 1 >= len(self.rebal):
-                break
-            rb_next = self.rebal[i + 1]
+                rb_next = self.trade_dates[-1]  # 最后一个调仓月: hold 延伸到数据末尾
+            else:
+                rb_next = self.rebal[i + 1]
             hi, hn = self.trade_dates.index(rb), self.trade_dates.index(rb_next)
             hold = self.trade_dates[hi + 1:hn + 1]
+            if len(hold) == 0:
+                continue
             if rb not in self.picks_map:
                 yield (rb, rb_next, hold, None, None, None, None)
                 continue
