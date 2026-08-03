@@ -12,9 +12,21 @@
   8. +CPPI(TIPP)      floor=max(floor,0.90*hwm), w=min(3*(A-F)/A,1)
   9. +CPPI085         m=2.5, α=0.85 (更早锁定, 更慢加仓)
   10. +HRP            层次风险平价权重替代 Top50 等权 (120日窗口, LedoitWolf, 2026-08-03)
-  11. +HRP+MA20三档098  HRP 权重 + MA20 三档 0.98 风控 (研究通过, 拟上线)
+  11. +HRP+MA20三档098  HRP 权重 + MA20 三档 0.98 风控
+  12. +MA20五档098     MA20 五档平滑: 1.0/0.75/0.5/0.25/0.0 (边界 1.00/0.99/0.98/0.97)
+  13. +MA20五档096     同上, 空仓线放宽到 0.96 (边界 1.00/0.99/0.98/0.96)
+  14. +MA20五档099     更早降仓 (边界 1.00/0.995/0.99/0.98)
+  15. +MA20五档97c     中档更密 (边界 1.00/0.99/0.985/0.97)
+  16. +MA20五档090     空仓线过度放宽 (边界 1.00/0.99/0.98/0.90, 敏感性边界)
+  17. +HRP+MA20五档098  HRP 权重 + 五档平滑 (2026-08-03 最终最优: 卡玛 0.98)
+  18. +MA20十档097     档位细分 10 档 (卡玛 0.97, 与廿档收敛, 边际递减)
+  19. +MA20廿档097     档位细分 20 档 (与十档结果几乎相同, 无需更细)
+  20. +五档×Vol        MA20 五档 × 20日波动率惩罚 (多指标综合, 否决: 踏空)
+  21. +三指标综合       MA20距离 × Vol × 20日动量 连续仓位 (否决: 牺牲收益)
 风控降仓部分按现金(0收益)缓冲; RS12 弱时持 512100 ETF 不变; 月度调仓成本 20bps。
 MA20/Vol 仓位信号均取 T-1 日收盘已知信息、T 日生效 (2026-08-03 修复同日前视)。
+2026-08-03 结论: +HRP+MA20五档098 为最终最优 (16.90%/0.99/-17.16%/卡玛0.98);
+档位细分 10 档后收敛; 多指标综合(Vol/动量)无增量。
 输出: results/risk_control_bt.txt, results/risk_control_nav.png
 """
 import os
@@ -59,6 +71,26 @@ VARIANTS = [
     ("+CPPI085", "cppi", {"m": 2.5, "alpha": 0.85}),
     ("+HRP", "hrp", {}),
     ("+HRP+MA20三档098", "ma20_hrp", {"deep": 0.98}),
+    ("+MA20五档098", "ma20_5", {"boundaries": [1.0, 0.99, 0.98, 0.97],
+                                 "weights": [1.0, 0.75, 0.5, 0.25]}),
+    ("+MA20五档096", "ma20_5", {"boundaries": [1.0, 0.99, 0.98, 0.96],
+                                 "weights": [1.0, 0.75, 0.5, 0.25]}),
+    ("+MA20五档099", "ma20_5", {"boundaries": [1.0, 0.995, 0.99, 0.98],
+                                 "weights": [1.0, 0.75, 0.5, 0.25]}),
+    ("+MA20五档97c", "ma20_5", {"boundaries": [1.0, 0.99, 0.985, 0.97],
+                                 "weights": [1.0, 0.75, 0.5, 0.25]}),
+    ("+MA20五档090", "ma20_5", {"boundaries": [1.0, 0.99, 0.98, 0.90],
+                                 "weights": [1.0, 0.75, 0.5, 0.25]}),
+    ("+HRP+MA20五档098", "ma20_hrp_5", {"boundaries": [1.0, 0.99, 0.98, 0.97],
+                                         "weights": [1.0, 0.75, 0.5, 0.25]}),
+    ("+MA20十档097", "ma20_10", {"boundaries": list(np.linspace(1.0, 0.97, 11)[:-1]),
+                                  "weights": [round(1.0 - 0.1 * i, 2) for i in range(10)]}),
+    ("+MA20廿档097", "ma20_20", {"boundaries": list(np.linspace(1.0, 0.97, 21)[:-1]),
+                                  "weights": [round(1.0 - 0.05 * i, 2) for i in range(20)]}),
+    ("+五档×Vol", "ma20_5_vol", {"boundaries": [1.0, 0.99, 0.98, 0.97],
+                                  "weights": [1.0, 0.75, 0.5, 0.25],
+                                  "v_hi": 0.30, "v_lo": 0.50, "v_min": 0.5}),
+    ("+三指标综合", "multi", {"v_hi": 0.30, "v_lo": 0.50, "v_min": 0.2, "mom_min": 0.6}),
 ]
 
 
@@ -151,6 +183,7 @@ def main():
     idx_close_1 = idx_close.shift(1)
     ma20_1 = ma20.shift(1)
     idx_vol20_1 = idx_vol20.shift(1)
+    mom20_1 = idx_ret.rolling(20).sum().shift(1)  # T-1 20日动量 (multi 变体)
     etf_ret = etf["pct_chg"] / 100.0
 
     # ---------- 每月 Top50 (BASE+VAL) ----------
@@ -238,7 +271,7 @@ def main():
         for (lb, rtype, par) in VARIANTS:
             nav = nav_rb[lb].get(rb, 1.0)
             # HRP 变体: 用 HRP 权重组合收益, 其余用等权
-            if rtype in ("hrp", "ma20_hrp"):
+            if rtype in ("hrp", "ma20_hrp", "ma20_hrp_5"):
                 wvec = hrp_w_map.get(rb)
                 if wvec is None:
                     cr = comb_ret
@@ -263,6 +296,45 @@ def main():
                         c, m = idx_close_1.get(t, np.nan), ma20_1.get(t, np.nan)
                         if np.isfinite(c) and np.isfinite(m):
                             w = 1.0 if c >= m else (0.5 if c >= par["deep"] * m else 0.0)
+                    elif rtype in ("ma20_5", "ma20_hrp_5", "ma20_10", "ma20_20"):
+                        c, m = idx_close_1.get(t, np.nan), ma20_1.get(t, np.nan)
+                        if np.isfinite(c) and np.isfinite(m):
+                            r = c / m
+                            w = 0.0
+                            for wgt, bnd in zip(par["weights"], par["boundaries"]):
+                                if r >= bnd:
+                                    w = wgt
+                                    break
+                    elif rtype == "ma20_5_vol":
+                        c, m = idx_close_1.get(t, np.nan), ma20_1.get(t, np.nan)
+                        v = idx_vol20_1.get(t, np.nan)
+                        w5 = 0.0
+                        if np.isfinite(c) and np.isfinite(m):
+                            r = c / m
+                            for wgt, bnd in zip(par["weights"], par["boundaries"]):
+                                if r >= bnd:
+                                    w5 = wgt
+                                    break
+                        if np.isfinite(v) and v > par["v_hi"]:
+                            w = w5 * float(np.clip((par["v_lo"] - v) / (par["v_lo"] - par["v_hi"]),
+                                                   par["v_min"], 1.0))
+                        else:
+                            w = w5
+                    elif rtype == "multi":
+                        c, m = idx_close_1.get(t, np.nan), ma20_1.get(t, np.nan)
+                        v = idx_vol20_1.get(t, np.nan)
+                        mo = mom20_1.get(t, np.nan)
+                        trend = 1.0
+                        if np.isfinite(c) and np.isfinite(m):
+                            trend = float(np.clip((c / m - 0.96) / 0.04, 0.0, 1.0))
+                        vol_pen = 1.0
+                        if np.isfinite(v) and v > par["v_hi"]:
+                            vol_pen = float(np.clip((par["v_lo"] - v) / (par["v_lo"] - par["v_hi"]),
+                                                    par["v_min"], 1.0))
+                        mom_pen = 1.0
+                        if np.isfinite(mo) and mo < 0:
+                            mom_pen = par["mom_min"]
+                        w = trend * vol_pen * mom_pen
                     elif rtype == "vol":
                         v = idx_vol20_1.get(t, np.nan)
                         if np.isfinite(v) and v > 0:
@@ -351,7 +423,12 @@ def main():
               "+VolTarget20": "#282", "+VolTarget15": "#3a6",
               "+DD触发": "#e90", "+DD触发1018": "#fa3",
               "+CPPI(TIPP)": "#a4c", "+CPPI085": "#73f",
-              "+HRP": "#06c", "+HRP+MA20三档098": "#036"}
+              "+HRP": "#06c", "+HRP+MA20三档098": "#036",
+               "+MA20五档098": "#f93", "+MA20五档096": "#e85",
+               "+MA20五档099": "#fb5", "+MA20五档97c": "#f72", "+MA20五档090": "#e70",
+               "+HRP+MA20五档098": "#085",
+               "+MA20十档097": "#7c4", "+MA20廿档097": "#9a6",
+               "+五档×Vol": "#a35", "+三指标综合": "#63a"}
     x_all = sorted(nav_series[labels[0]].index)
     for lb in labels:
         s = nav_series[lb].reindex(x_all).ffill().fillna(1.0)
