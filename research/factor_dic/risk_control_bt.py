@@ -11,8 +11,10 @@
   7. +DD触发1018      更激进: -10%半仓/-18%空仓/-3%修复
   8. +CPPI(TIPP)      floor=max(floor,0.90*hwm), w=min(3*(A-F)/A,1)
   9. +CPPI085         m=2.5, α=0.85 (更早锁定, 更慢加仓)
+  10. +HRP            层次风险平价权重替代 Top50 等权 (120日窗口, LedoitWolf, 2026-08-03)
+  11. +HRP+MA20三档098  HRP 权重 + MA20 三档 0.98 风控 (研究通过, 拟上线)
 风控降仓部分按现金(0收益)缓冲; RS12 弱时持 512100 ETF 不变; 月度调仓成本 20bps。
-
+MA20/Vol 仓位信号均取 T-1 日收盘已知信息、T 日生效 (2026-08-03 修复同日前视)。
 输出: results/risk_control_bt.txt, results/risk_control_nav.png
 """
 import os
@@ -30,6 +32,10 @@ import matplotlib.pyplot as plt
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 
+from sklearn.covariance import LedoitWolf
+from scipy.cluster.hierarchy import linkage, leaves_list
+from scipy.spatial.distance import squareform
+
 from research.factor_dic import run_validation as rv
 from research.factor_dic import combo_backtest as cb
 from research.factor_dic import style_factors as sf
@@ -38,8 +44,9 @@ OUT_DIR = rv.OUT_DIR
 COST = rv.COST_BPS / 10000.0
 TOP_N = rv.TOP_N
 SQRT_242 = np.sqrt(242.0)
+HRP_WINDOW = 120
 
-# (label, 风控类型, 参数)  类型: None/ma20/vol/dd/cppi
+# (label, 风控类型, 参数)  类型: None/ma20/vol/dd/cppi/hrp/ma20_hrp
 VARIANTS = [
     ("BASE+VAL", None, {}),
     ("+MA20三档", "ma20", {"deep": 0.97}),
@@ -50,7 +57,60 @@ VARIANTS = [
     ("+DD触发1018", "dd", {"half": -0.10, "zero": -0.18, "fix": -0.03}),
     ("+CPPI(TIPP)", "cppi", {"m": 3.0, "alpha": 0.90}),
     ("+CPPI085", "cppi", {"m": 2.5, "alpha": 0.85}),
+    ("+HRP", "hrp", {}),
+    ("+HRP+MA20三档098", "ma20_hrp", {"deep": 0.98}),
 ]
+
+
+def _inverse_vol(cov, codes):
+    sub = cov.loc[codes, codes]
+    vols = np.sqrt(np.diag(sub))
+    iv = 1.0 / (vols + 1e-9)
+    return iv.sum()
+
+
+def _hrp_weights(returns):
+    """returns: DataFrame(日收益, 行=交易日, 列=个股). 返回个股权重 Series (与 direction2_hrp 一致)"""
+    r = returns.dropna(how="all")
+    if len(r) < 20 or len(r.columns) < 2:
+        return pd.Series(1.0 / len(r.columns), index=r.columns)
+    try:
+        cov = LedoitWolf().fit(r).covariance_
+    except Exception:
+        cov = r.cov().values + np.eye(len(r.columns)) * 1e-6
+    corr = pd.DataFrame(r.corr().values, index=r.columns, columns=r.columns).fillna(0.0)
+    dist = pd.DataFrame(np.sqrt(0.5 * (1.0 - corr)), index=corr.index, columns=corr.columns)
+    cov_pd = pd.DataFrame(cov, index=r.columns, columns=r.columns)
+    try:
+        links = linkage(squareform(dist.values, checks=False), method="single")
+    except Exception:
+        links = linkage(dist.values[np.triu_indices_from(dist.values, k=1)], method="single")
+    sort_idx = list(leaves_list(links))
+    sorted_codes = r.columns[sort_idx]
+
+    def _recursive_bisect(codes):
+        if len(codes) == 1:
+            return {codes[0]: 1.0}
+        mid = len(codes) // 2
+        left, right = codes[:mid], codes[mid:]
+        wl = _inverse_vol(cov_pd, left)
+        wr = _inverse_vol(cov_pd, right)
+        total = wl + wr
+        if total <= 0:
+            return {c: 1.0 / len(codes) for c in codes}
+        lw = wl / total
+        out = {}
+        for c, w in _recursive_bisect(left).items():
+            out[c] = lw * w
+        for c, w in _recursive_bisect(right).items():
+            out[c] = (1 - lw) * w
+        return out
+
+    w = pd.Series(_recursive_bisect(sorted_codes)).reindex(r.columns).fillna(0.0)
+    s = w.sum()
+    if s > 0:
+        w = w / s
+    return w
 
 
 def load_idx(code):
@@ -87,6 +147,10 @@ def main():
     idx_close = sml["close"]
     ma20 = idx_close.rolling(20).mean()
     idx_vol20 = idx_ret.rolling(20).std() * SQRT_242
+    # 修复同日信号前视: 仓位信号一律取 T-1 日收盘已知信息, T 日生效
+    idx_close_1 = idx_close.shift(1)
+    ma20_1 = ma20.shift(1)
+    idx_vol20_1 = idx_vol20.shift(1)
     etf_ret = etf["pct_chg"] / 100.0
 
     # ---------- 每月 Top50 (BASE+VAL) ----------
@@ -128,10 +192,29 @@ def main():
         picks_map[rb] = has.mean(axis=1).nlargest(TOP_N).index.tolist()
     print(f"[load] Top50 月份 {len(picks_map)}, 耗时 {time.time()-t0:.0f}s", flush=True)
 
+    # ---------- HRP 权重 (120日窗口, T-1 已知) ----------
+    hrp_w_map = {}
+    for rb in picks_map:
+        picks = picks_map[rb]
+        hi = trade_dates.index(rb)
+        win = trade_dates[max(0, hi - HRP_WINDOW):hi]
+        rets = pct_df.reindex(columns=picks).reindex(win)
+        hrp_w_map[rb] = _hrp_weights(rets)
+    print(f"[load] HRP 权重月份 {len(hrp_w_map)}, 耗时 {time.time()-t0:.0f}s", flush=True)
+
     # ---------- 日频风控回测 ----------
     labels = [v[0] for v in VARIANTS]
     nav_rb = {lb: {rebal[0]: 1.0} for lb in labels}
     avg_w = {lb: [] for lb in labels}          # RS12强时段的日均仓位
+    # DD/CPPI/TIPP 跨期状态: 高水位/floor/半仓状态从 1.0 起跨月延续 (修复每月重置)
+    st_hwm = {lb: 1.0 for lb in labels}
+    st_floor = {lb: (par["alpha"] if rtype == "cppi" else 0.90)
+                for (lb, rtype, par) in VARIANTS}
+    st_w_half = {lb: False for lb in labels}
+    # DD 变体 shadow NAV: 假想未降仓的组合净值, 用于计算回撤与恢复
+    # (修复: 原用实际 NAV 计算 dd, 空仓后 NAV 冻结导致无法自行恢复到恢复线)
+    st_shadow = {lb: 1.0 for lb in labels}
+    st_shadow_hwm = {lb: 1.0 for lb in labels}
     rs12_days = 0
 
     for i, rb in enumerate(rebal):
@@ -154,39 +237,65 @@ def main():
 
         for (lb, rtype, par) in VARIANTS:
             nav = nav_rb[lb].get(rb, 1.0)
-            hwm, floor = nav, 0.90 * nav
-            w_half = False
+            # HRP 变体: 用 HRP 权重组合收益, 其余用等权
+            if rtype in ("hrp", "ma20_hrp"):
+                wvec = hrp_w_map.get(rb)
+                if wvec is None:
+                    cr = comb_ret
+                else:
+                    cr = (comb * wvec.reindex(comb.columns)).sum(axis=1, min_count=1)
+            else:
+                cr = comb_ret
+            # DD/CPPI/TIPP 跨期状态 (不每月重置, 修复): 高水位/floor/半仓状态跨月延续
+            hwm = st_hwm[lb]
+            floor = st_floor[lb]
+            w_half = st_w_half[lb]
+            shadow = st_shadow[lb]
+            shadow_hwm = st_shadow_hwm[lb]
+            # DD: T 日仓位由 T-1 末 shadow 回撤决定 (跨月状态重算, 无前视)
+            dd_prev = shadow / shadow_hwm - 1.0
             ws = []
             for t in hold:
                 r_t = e_ret.loc[t]
                 if rs12_on:
                     w = 1.0
-                    if rtype == "ma20":
-                        c, m = idx_close.get(t, np.nan), ma20.get(t, np.nan)
+                    if rtype in ("ma20", "ma20_hrp"):
+                        c, m = idx_close_1.get(t, np.nan), ma20_1.get(t, np.nan)
                         if np.isfinite(c) and np.isfinite(m):
                             w = 1.0 if c >= m else (0.5 if c >= par["deep"] * m else 0.0)
                     elif rtype == "vol":
-                        v = idx_vol20.get(t, np.nan)
+                        v = idx_vol20_1.get(t, np.nan)
                         if np.isfinite(v) and v > 0:
                             w = float(np.clip(par["tgt"] / v, par["floor_w"], 1.0))
                     elif rtype == "dd":
-                        dd = nav / hwm - 1.0
-                        if w_half and dd >= par["fix"]:
+                        # 用 T-1 末的 shadow 回撤决定 T 日仓位 (修复: 先决策再吃当日收益, 无前视)
+                        if w_half and dd_prev >= par["fix"]:
                             w_half = False
-                        if dd <= par["half"]:
+                        if dd_prev <= par["half"]:
                             w_half = True
-                        w = 0.0 if dd <= par["zero"] else (0.5 if w_half else 1.0)
+                        w = 0.0 if dd_prev <= par["zero"] else (0.5 if w_half else 1.0)
                     elif rtype == "cppi":
                         floor = max(floor, par["alpha"] * hwm)
                         w = float(np.clip(par["m"] * (nav - floor) / nav, 0.0, 1.0)) if nav > 0 else 0.0
                     ws.append(w)
-                    r_t = w * comb_ret.loc[t]      # 降仓部分按现金缓冲
+                    r_t = w * cr.loc[t]      # 降仓部分按现金缓冲
                 nav *= (1.0 + r_t)
                 hwm = max(hwm, nav)
+                # shadow NAV: 假想始终满仓股票组合, 与 RS12 状态无关 (修复: 弱段也更新)
+                # 更新发生在当日收益应用之后, 供 T+1 日决策使用 (无前视)
+                if rtype == "dd":
+                    shadow *= (1.0 + comb_ret.loc[t])
+                    shadow_hwm = max(shadow_hwm, shadow)
+                    dd_prev = shadow / shadow_hwm - 1.0
             if ws:
                 avg_w[lb].append(np.mean(ws))
             nav *= (1.0 - COST)
             nav_rb[lb][rb_next] = nav
+            st_hwm[lb] = hwm
+            st_floor[lb] = floor
+            st_w_half[lb] = w_half
+            st_shadow[lb] = shadow
+            st_shadow_hwm[lb] = shadow_hwm
 
     # ---------- 汇总 ----------
     bm_e_m, bm_i_m = {}, {}
@@ -196,14 +305,14 @@ def main():
         rb_next = rebal[i + 1]
         hi, hn = trade_dates.index(rb), trade_dates.index(rb_next)
         hold = trade_dates[hi + 1:hn + 1]
-        bm_e_m[rb] = (1 + etf_ret.reindex(hold).fillna(0.0)).prod() - 1
-        bm_i_m[rb] = (1 + idx_ret.reindex(hold).fillna(0.0)).prod() - 1
+        bm_e_m[rb_next] = (1 + etf_ret.reindex(hold).fillna(0.0)).prod() - 1
+        bm_i_m[rb_next] = (1 + idx_ret.reindex(hold).fillna(0.0)).prod() - 1
     bm_e_m, bm_i_m = pd.Series(bm_e_m), pd.Series(bm_i_m)
 
     print("\n" + "=" * 110)
     print("回撤控制对比 (BASE+VAL + RS12 框架, 2020-2026, 月度调仓 Top50, 20bps, 风控降仓吃现金)")
     print("=" * 110)
-    print(f"\n{'策略':<16}{'年化':>8}{'Sharpe':>8}{'MaxDD':>9}{'月胜率':>8}{'超额vETF':>10}{'卡玛':>7}{'平均仓位':>8}")
+    print(f"\n{'策略':<16}{'年化':>8}{'Sharpe':>8}{'MaxDD':>9}{'月胜率':>8}{'超额vETF':>10}{'卡玛':>7}{'强段均仓':>8}")
     out_lines = []
     nav_series = {}
     for lb in labels:
@@ -241,7 +350,8 @@ def main():
     colors = {"BASE+VAL": "#888", "+MA20三档": "#c33", "+MA20三档098": "#f66",
               "+VolTarget20": "#282", "+VolTarget15": "#3a6",
               "+DD触发": "#e90", "+DD触发1018": "#fa3",
-              "+CPPI(TIPP)": "#a4c", "+CPPI085": "#73f"}
+              "+CPPI(TIPP)": "#a4c", "+CPPI085": "#73f",
+              "+HRP": "#06c", "+HRP+MA20三档098": "#036"}
     x_all = sorted(nav_series[labels[0]].index)
     for lb in labels:
         s = nav_series[lb].reindex(x_all).ffill().fillna(1.0)
