@@ -71,6 +71,12 @@ class Env:
         self.idx_vol20_1 = idx_vol20.shift(1)
         self.etf_ret = etf["pct_chg"] / 100.0
         self.idx_ret = idx_ret
+        # ETF 腿专属风控信号 (512100, T-1 已知 T 日生效; 与股票腿 MA20 解耦)
+        etf_close = etf["close"]
+        self.etf_close_1 = etf_close.shift(1)
+        self.ma5_1 = etf_close.rolling(5).mean().shift(1)
+        self.ma10_1 = etf_close.rolling(10).mean().shift(1)
+        self.ma120_1 = etf_close.rolling(120).mean().shift(1)
 
     def _build_picks(self):
         picks_map = {}

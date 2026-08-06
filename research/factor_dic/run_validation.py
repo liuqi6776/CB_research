@@ -40,7 +40,7 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 START_YEAR = 2020
 FORWARD_DAYS = 20
 COST_BPS = 20
-TOP_N = 50
+TOP_N = 60
 WINSOR = (0.01, 0.99)
 INDEX_CODE = "000852.SH"   # 中证1000
 

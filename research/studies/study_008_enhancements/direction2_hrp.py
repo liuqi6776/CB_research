@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""方向2: 层次风险平价 (HRP) 替代 Top50 等权
-- 权重: 调仓日取截至 rb 的过去 120 日个股日收益 (T-1 已知, 无前视), LedoitWolf 协方差 + 层次聚类 + 递归二分
-- 对比: 等权 vs HRP (无 MA20); 等权+MA20 vs HRP+MA20 (全区间, RS12/成本/基准一致)
+"""方向2: 层次风险平价 (HRP) 替代 Top60 等权
+- 基线权重: 逆波动权重 IVW120 (w_i ∝ 1/σ_i, 调仓日取截至 rb 过去 120 日日收益标准差, T-1 已知无前视)
+- 实验分支: 标准 HRP (_hrp_weights: LedoitWolf 协方差 + 层次聚类 + 递归二分), 仅用于 A/B, 不覆盖基线
+- 对比: 等权 vs IVW (无 MA20); 等权+MA20 vs IVW+MA20 (全区间, RS12/成本/基准一致)
 """
 import os
 import sys
@@ -27,8 +28,25 @@ WINDOW = 120
 MA20_DEEP = 0.98
 
 
+def _ivw_weights(returns):
+    """逆波动权重 (IVW120): w_i ∝ 1/σ_i, 归一化.
+    returns: DataFrame(日收益, 行=交易日, 列=个股). 返回个股权重 Series.
+    基线权重方式 (阶段1 冻结), 标准 HRP 见 _hrp_weights (实验分支).
+    """
+    r = returns.dropna(how="all")
+    if len(r) < 2 or len(r.columns) < 1:
+        return pd.Series(1.0 / len(r.columns), index=r.columns)
+    vols = r.std() + 1e-12
+    w = 1.0 / vols
+    s = w.sum()
+    if s > 0:
+        w = w / s
+    return w
+
+
 def _hrp_weights(returns):
-    """returns: DataFrame(日收益, 行=交易日, 列=个股). 返回个股权重 Series"""
+    """标准 HRP (实验分支, 不覆盖 IVW 基线):
+    returns: DataFrame(日收益, 行=交易日, 列=个股). 返回个股权重 Series"""
     r = returns.dropna(how="all")
     if len(r) < 20 or len(r.columns) < 2:
         return pd.Series(1.0 / len(r.columns), index=r.columns)
@@ -89,7 +107,7 @@ def _inverse_vol(cov, codes):
     return iv.sum()
 
 
-def run_hrp(env, use_hrp, use_ma20):
+def run_hrp(env, use_hrp, use_ma20, use_std_hrp=False):
     navs = {}
     for rb, rb_next, hold, picks, comb, e_ret, rs12_on in env.month_segments():
         nav = navs.get(rb, 1.0)
@@ -101,7 +119,7 @@ def run_hrp(env, use_hrp, use_ma20):
             hi = env.trade_dates.index(rb)
             win = env.trade_dates[max(0, hi - WINDOW):hi]
             rets = env.pct_df.reindex(columns=picks).reindex(win)
-            w = _hrp_weights(rets)
+            w = _ivw_weights(rets) if not use_std_hrp else _hrp_weights(rets)
         else:
             w = pd.Series(1.0 / len(picks), index=picks)
         cr = (comb * w.reindex(comb.columns)).sum(axis=1, min_count=1)
@@ -124,17 +142,18 @@ def main():
     env = C.Env()
     navs = {
         "等权": run_hrp(env, use_hrp=False, use_ma20=False),
-        "HRP": run_hrp(env, use_hrp=True, use_ma20=False),
+        "IVW120": run_hrp(env, use_hrp=True, use_ma20=False),
         "等权+MA20": run_hrp(env, use_hrp=False, use_ma20=True),
-        "HRP+MA20": run_hrp(env, use_hrp=True, use_ma20=True),
+        "IVW120+MA20": run_hrp(env, use_hrp=True, use_ma20=True),
+        "标准HRP(实验)": run_hrp(env, use_hrp=True, use_ma20=False, use_std_hrp=True),
     }
     rows = [(lb, nav, {}) for lb, nav in navs.items()]
     txt, _ = C.metrics_table(rows)
     report = []
     report.append("=" * 80)
-    report.append("方向2: 层次风险平价 (HRP) 替代 Top50 等权")
-    report.append(f"权重: 调仓日取截至 rb 过去 {WINDOW} 日收益, LedoitWolf 协方差 + 单连接聚类 + 递归二分; T-1 可得, 无前视")
-    report.append("月内权重固定 (与等权一致), 月度调仓 20bps, RS12 弱段持 512100")
+    report.append("方向2: 逆波动权重 (IVW120) vs 等权 / 标准HRP(实验)")
+    report.append(f"权重: 调仓日取截至 rb 过去 {WINDOW} 日收益; IVW120=1/σ_i 归一化; 标准HRP=LedoitWolf 协方差+单连接聚类+递归二分 (实验)")
+    report.append("月内权重固定, 月度调仓 20bps, RS12 弱段持 512100")
     report.append("")
     report.append(txt)
     report.append("=" * 80)
@@ -146,7 +165,7 @@ def main():
     fig, ax = plt.subplots(figsize=(13, 6))
     for lb, nav in navs.items():
         ax.plot(np.arange(len(nav)), nav.values, label=lb, lw=1.6)
-    ax.set_title("HRP vs 等权 (BASE+VAL, 2020-2026)")
+    ax.set_title("IVW120 vs 等权 / 标准HRP (BASE+VAL, 2020-2026)")
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()

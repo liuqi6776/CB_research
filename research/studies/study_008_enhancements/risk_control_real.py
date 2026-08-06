@@ -24,7 +24,30 @@ from research.studies.study_008_enhancements.direction2_hrp import _hrp_weights,
 
 TIER3 = {"bnd": [1.0, 0.98], "w": [1.0, 0.5]}
 TIER5 = {"bnd": [1.0, 0.99, 0.98, 0.97], "w": [1.0, 0.75, 0.5, 0.25]}
-COST_SINGLE = C.COST / 2.0  # 10bps
+COST_SINGLE = C.COST / 2.0  # 10bps (MA20 档位切换成本, 仅风控路径使用)
+
+# ---- 阶段2 (P0-1): 资金权重换手 + 买卖分项费率 ----
+# 单边费率 (按换手金额比例), 现实保守值:
+#   股票佣金 万1 双边 (用户实盘费率); 印花税仅卖出, 2023-08-28 前 千1 / 之后 万5;
+#   ETF 佣金 万1 无印花税
+# 过户费 万0.1 极小, 并入佣金近似 (误差 <0.5bp/次)
+COMMISSION = 0.0001
+STAMP_SPLIT_DATE = "20230828"
+STAMP_SELL_RATES = (0.0010, 0.0005)  # (2023-08-28 前, 之后)
+ETF_FEE = COMMISSION  # ETF 买卖同费率, 无印花税
+
+
+def stamp_sell(date):
+    """卖出股票印花税, 按成交日分档 (2023-08-28 印花税减半)"""
+    return STAMP_SELL_RATES[0] if str(date) < STAMP_SPLIT_DATE else STAMP_SELL_RATES[1]
+
+
+def stock_buy_fee(date=None):
+    return COMMISSION
+
+
+def stock_sell_fee(date):
+    return COMMISSION + stamp_sell(date)
 
 
 def tier_w(c, m, tier):

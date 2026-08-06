@@ -1,0 +1,44 @@
+{
+ "fee_1e4": {
+  "metrics": {
+   "final": 2.2591418413590474,
+   "ann": 0.13462706742189146,
+   "sharpe": 0.6928408316449296,
+   "mdd": 0.2611341689725341,
+   "calmar": 0.5155474978690032
+  },
+  "switch": 0,
+  "turn": 0,
+  "cost_buy": 0,
+  "cost_sell": 0,
+  "n_stop": 0,
+  "n_floor": 0,
+  "n_recov": 0,
+  "n_buy_block": 3,
+  "n_st_block": 0,
+  "n_suspend": 1,
+  "n_missing": 0,
+  "n_trad_removed": 17
+ },
+ "fee_2p5e4": {
+  "metrics": {
+   "final": 2.23572807077447,
+   "ann": 0.13284290945629662,
+   "sharpe": 0.6857018387666389,
+   "mdd": 0.2622283555810254,
+   "calmar": 0.5065924665620296
+  },
+  "switch": 0,
+  "turn": 0,
+  "cost_buy": 0,
+  "cost_sell": 0,
+  "n_stop": 0,
+  "n_floor": 0,
+  "n_recov": 0,
+  "n_buy_block": 3,
+  "n_st_block": 0,
+  "n_suspend": 1,
+  "n_missing": 0,
+  "n_trad_removed": 17
+ }
+}

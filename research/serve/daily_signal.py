@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-每日信号生成：BASE+VAL+RS12+MA20三档(0.98) 最优策略 (research/serve 部署版)
+每日信号生成：BASE+VAL+IVW120+RS12 (research/serve 部署版, 基线 v1.1.0)
 
-复刻 risk_control_bt.py 的选股/择时/风控逻辑, 但只输出【最新持有期】的今日操作建议:
+复刻 risk_control_bt.py 的选股/择时逻辑 + study_008 阶段4/5 约束, 只输出
+【最新持有期】的今日操作建议:
   - 当前调仓日 rb = 最近一个月的最后交易日 (含最新, 不去尾)
-  - Top50 选股 (ret_1m + ivol + turnover_vol_20 + VAL, 截面 zscore 均值取 Top50)
+  - Top60 选股 (ret_1m + ivol + turnover_vol_20 + VAL, 截面 zscore 均值取 Top60)
+  - 权重: IVW120 (逆波动 w_i ∝ 1/σ_i, 调仓日过去 120 日收益)
+  - 阶段4 可交易过滤 (信号名单 → 订单名单): ST / 退市·长期停牌 (60日有效成交<20)
+    / 极低流动性 (60日均成交额<300万) / 僵尸股 (120日年化波动<12%, P0-3 波动率下限)
+  - 阶段5 集中度约束: 单股≤4% / 行业≤20% / Top5≤20% / 容量≤5%×60日均成交额
   - RS12 择时 (000852/000300 过去240日相对强度, 弱时持 512100 ETF)
-  - MA20 三档日频仓位 (close>=MA20 -> 1.0; MA20*0.98<=close<MA20 -> 0.5; 否则 0.0)
+  - fail-closed: 订单名单 <10 只 → 沿用最近一期历史信号持仓 (不静默退化)
+  - 无 MA20/DD 风控 (基线 v1.0.0 已剥离, 风险控制移交账户治理阈值)
+  - signal_date=调仓日(月末收盘生成), execution_date=下一交易日(开盘执行)
   - 估值数据缺失时 PIT fallback 到 <=调仓日 的最新估值快照 (与回测同口径)
 
 落盘: research/serve/data/daily/YYYY-MM-DD.json (dashboard 历史记录)
@@ -20,6 +27,7 @@ import os
 import sys
 import json
 import time
+import types
 import argparse
 
 import numpy as np
@@ -32,11 +40,15 @@ if ROOT not in sys.path:
 from research.factor_dic import run_validation as rv
 from research.factor_dic import combo_backtest as cb
 from research.factor_dic import style_factors as sf
+from research.studies.study_008_enhancements import common as C
+from research.studies.study_008_enhancements.tradability import Tradability, load_amount_df
+from research.studies.study_008_enhancements.concentration import (
+    apply_concentration, amount60_at,
+)
 
 SERVE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SERVE_DIR, "data", "daily")
 TOP_N = rv.TOP_N
-DEEP = 0.98
 NAME_MAP_PATH = os.path.join(ROOT, "stock_name_map.parquet")
 
 
@@ -68,31 +80,29 @@ def load_valuation_pit(rebal_dates, all_codes):
     return out
 
 
-def build_signal(rb, picks, sig_rs12, idx_close, ma20, name_map):
-    """生成单期信号 dict"""
+def build_signal(rb, execution_date, picks, ivw_weights, sig_rs12, name_map,
+                 order_picks=None, removed=None, fail_closed=False):
+    """生成单期信号 dict (基线 v1.1.0: 阶段4 可交易过滤 + 阶段5 集中度约束)
+
+    picks      : 信号名单 (原始 Top60, score 排序)
+    ivw_weights: 信号名单的 IVW120 目标权重 (约束前)
+    order_picks: 订单名单 (过滤+约束后, [(code, name, weight)], 沿用上期时 weight 来自历史)
+    removed    : {code: reason} 阶段4 剔除明细
+    fail_closed: 订单名单 <10 只 → 沿用最近一期历史信号持仓
+    """
     rs12_on = bool(sig_rs12.loc[rb]) if rb in sig_rs12.index else True
     rs12_val = float(sig_rs12.loc[rb]) if rb in sig_rs12.index else np.nan
 
-    # 最新交易日 = 调仓日当天 (无未来数据, PIT 干净)
-    as_of = rb
-    c = float(idx_close.loc[as_of]) if as_of in idx_close.index else np.nan
-    m = float(ma20.loc[as_of]) if as_of in ma20.index else np.nan
-    w = 1.0
-    if np.isfinite(c) and np.isfinite(m):
-        w = 1.0 if c >= m else (0.5 if c >= DEEP * m else 0.0)
-
-    if not rs12_on:
+    n_order = len(order_picks) if order_picks is not None else len(picks)
+    if fail_closed:
+        action = f"订单名单过少, 沿用最近一期持仓 ({n_order} 只, fail-closed)"
+        position = "沿用上期持仓"
+    elif not rs12_on:
         action = "持有 512100 ETF (全额, RS12 弱)"
         position = "512100 ETF"
-    elif w >= 1.0:
-        action = "满仓持有组合 (Top50 等权)"
-        position = "股票组合"
-    elif w >= 0.5:
-        action = "半仓持有 (000852 跌破 MA20, 50% 组合 + 50% 现金)"
-        position = "股票组合(半仓)"
     else:
-        action = "空仓观望 (000852 跌破 MA20×0.98, 全部现金)"
-        position = "现金"
+        action = f"满仓持有组合 (Top{TOP_N}→订单{n_order}, IVW120 权重 + 集中度约束)"
+        position = "股票组合"
 
     picks_out = []
     for code, score in picks:
@@ -100,21 +110,52 @@ def build_signal(rb, picks, sig_rs12, idx_close, ma20, name_map):
             "code": code,
             "name": name_map.get(code, ""),
             "score": round(float(score), 3),
+            "target_weight": round(float(ivw_weights.get(code, 0.0)), 5),
         })
 
+    order_out = []
+    if order_picks is not None:
+        for code, wgt in order_picks:
+            order_out.append({
+                "code": code,
+                "name": name_map.get(code, ""),
+                "target_weight": round(float(wgt), 5),
+            })
+
     return {
-        "as_of_date": as_of,
+        "signal_date": rb,           # 月末收盘生成信号日
+        "execution_date": execution_date,  # 下一交易日开盘执行日
+        "as_of_date": rb,
         "rebalance_date": rb,
         "rs12_on": rs12_on,
         "rs12_value": round(rs12_val, 4) if rs12_val == rs12_val else None,
-        "ma20": {"close": None if not np.isfinite(c) else round(c, 2),
-                 "ma20": None if not np.isfinite(m) else round(m, 2),
-                 "deep": DEEP, "weight": w},
         "action": action,
         "position": position,
-        "picks": picks_out,
+        "picks": picks_out,          # 信号名单 (原始 Top60)
         "picks_count": len(picks_out),
+        "order_picks": order_out,    # 订单名单 (阶段4 过滤 + 阶段5 约束后)
+        "order_picks_count": len(order_out),
+        "tradability_removed": {str(k): str(v) for k, v in (removed or {}).items()},
+        "fail_closed": bool(fail_closed),
     }
+
+
+def _load_prev_order():
+    """最近一期历史信号的订单名单 (fail-closed 沿用). 返回 (codes, weights Series) 或 None"""
+    today = time.strftime("%Y-%m-%d")
+    hist = sorted(f for f in os.listdir(DATA_DIR)
+                  if f.endswith(".json") and f[:10] < today)
+    for fp in reversed(hist):
+        try:
+            with open(os.path.join(DATA_DIR, fp), encoding="utf-8") as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        ops = d.get("order_picks") or d.get("picks") or []
+        if ops:
+            return ([p["code"] for p in ops],
+                    pd.Series({p["code"]: float(p["target_weight"]) for p in ops}))
+    return None
 
 
 def main():
@@ -148,8 +189,6 @@ def main():
     big = load_idx("000300.SH")
     ratio = sml["close"] / big["close"].reindex(sml.index)
     sig_rs12 = ((ratio / ratio.shift(240)).rolling(5).mean() - 1.0 > 0).reindex(rebal)
-    idx_close = sml["close"]
-    ma20 = idx_close.rolling(20).mean()
 
     name_map = {}
     if os.path.exists(NAME_MAP_PATH):
@@ -202,7 +241,53 @@ def main():
     picks = list(zip(scored.index.tolist(), scored.values.tolist()))
     top = picks[:TOP_N]
 
-    sig = build_signal(rb, top, sig_rs12, idx_close, ma20, name_map)
+    # IVW120 目标权重: 调仓日过去 120 日个股日收益标准差取逆 (与回测 direction2_hrp._ivw_weights 同口径)
+    hi = trade_dates.index(rb)
+    win = trade_dates[max(0, hi - 120):hi]
+    top_codes = [c for c, _ in top]
+    rets = pct_df.reindex(columns=top_codes).reindex(win)
+    vols = rets.std() + 1e-12
+    ivw = (1.0 / vols)
+    ivw = ivw / ivw.sum()
+
+    # ---------- 阶段4: 可交易过滤 (信号名单 → 订单名单, 与回测生产路径同参数) ----------
+    amount_df = load_amount_df(types.SimpleNamespace(all_codes=all_codes), trade_dates)
+    tf = Tradability(trade_dates, amount_df, lookback=60, min_amount=3e6,
+                     min_px_days=20, min_vol=12.0, pct_df=pct_df)
+    order_codes, removed = tf(rb, top_codes)
+    fail_closed = len(order_codes) < 10
+    carry_w = None
+    if fail_closed:
+        prev = _load_prev_order()
+        if prev:
+            order_codes, carry_w = prev
+            print(f"[warn] {rb} 订单名单过少, fail-closed 沿用最近一期 {len(order_codes)} 只", flush=True)
+        else:
+            order_codes = top_codes[:10]
+            print(f"[warn] {rb} 订单名单过少且无历史信号, 取信号名单前 10 只兜底", flush=True)
+
+    # ---------- 阶段5: 集中度约束 (单股4% / 行业20% / Top5 20% / 容量5%×ADTV60) ----------
+    if fail_closed and carry_w is not None:
+        w2 = carry_w                          # fail-closed: 保持上期权重不动
+    else:
+        w_sub = ivw.reindex(order_codes)
+        w_sub = w_sub / w_sub.sum()
+        ind_map = C.load_industry_map() if os.path.exists(
+            os.path.join(C.DATA_DIR, "industry_map.parquet")) else None
+        w2 = apply_concentration(
+            w_sub,
+            ind_map=ind_map,
+            cap_stock=0.04, cap_ind=0.20, cap_top5=0.20,
+            amount60=amount60_at(amount_df, trade_dates, rb),
+            nav_pre=1.0, cap_amount=0.05, scale=1e8)
+
+    # execution_date = 下一交易日 (开盘执行)
+    nxt = [d for d in trade_dates if d > rb]
+    execution_date = nxt[0] if nxt else rb
+
+    sig = build_signal(rb, execution_date, top, ivw, sig_rs12, name_map,
+                       order_picks=list(w2.items()), removed=removed,
+                       fail_closed=fail_closed)
 
     # 数据时效标注
     notes = []
@@ -226,19 +311,21 @@ def main():
 
     # ---------- 打印摘要 ----------
     print("\n" + "=" * 78)
-    print(f"今日操作建议  数据截至 {sig['as_of_date']}  生成 {sig['generated_at']}")
+    print(f"今日操作建议  信号日 {sig['signal_date']}  执行日 {sig['execution_date']}  生成 {sig['generated_at']}")
     print("=" * 78)
     print(f"当前调仓日: {sig['rebalance_date']}")
     print(f"RS12 择时:  {'强(持股)' if sig['rs12_on'] else '弱(持ETF)'}  value={sig['rs12_value']}")
-    if sig["rs12_on"]:
-        m20 = sig["ma20"]
-        print(f"MA20 三档:  close={m20['close']}  MA20={m20['ma20']}  (deep={m20['deep']})  -> 仓位 w={m20['weight']}")
     print(f"操作: {sig['action']}")
-    print(f"持仓数: {sig['picks_count']}")
-    print("\nTop 10:")
-    for i, p in enumerate(sig["picks"][:10], 1):
+    print(f"信号名单: {sig['picks_count']} 只 | 订单名单: {sig['order_picks_count']} 只 | fail-closed: {sig['fail_closed']}")
+    if sig["tradability_removed"]:
+        rcnt = {}
+        for r in sig["tradability_removed"].values():
+            rcnt[r] = rcnt.get(r, 0) + 1
+        print(f"阶段4 剔除 {len(sig['tradability_removed'])} 只次: " + ", ".join(f"{k}={v}" for k, v in sorted(rcnt.items())))
+    print("\n订单名单 Top 10 (约束后权重):")
+    for i, p in enumerate(sig["order_picks"][:10], 1):
         nm = p["name"] or "?"
-        print(f"  {i:>2}. {p['code']}  {nm:<8}  score={p['score']}")
+        print(f"  {i:>2}. {p['code']}  {nm:<8}  w={p['target_weight']:.4f}")
     if notes:
         print("\n数据时效提示:")
         for n in notes:
@@ -249,11 +336,15 @@ def main():
             from notify import send_email_html
             lines = [f"<h3>今日操作 ({sig['as_of_date']})</h3>",
                      f"<p><b>{sig['action']}</b></p>",
-                     f"<p>RS12: {'强' if sig['rs12_on'] else '弱'} | 调仓日 {sig['rebalance_date']} | 持仓 {sig['picks_count']} 只</p>",
+                     f"<p>RS12: {'强' if sig['rs12_on'] else '弱'} | 调仓日 {sig['rebalance_date']} | "
+                     f"信号 {sig['picks_count']} 只 → 订单 {sig['order_picks_count']} 只</p>",
                      "<ul>"]
-            for p in sig["picks"][:10]:
-                lines.append(f"<li>{p['code']} {p['name']} (score {p['score']})</li>")
+            for p in sig["order_picks"][:10]:
+                lines.append(f"<li>{p['code']} {p['name']} (w {p['target_weight']})</li>")
             lines.append("</ul>")
+            if sig["tradability_removed"]:
+                lines.append(f"<p style='color:#a00'>⚠️ 阶段4 剔除 {len(sig['tradability_removed'])} 只次: "
+                             f"{', '.join(f'{k}={v}' for k, v in sig['tradability_removed'].items()[:8])}</p>")
             for n in notes:
                 lines.append(f"<p style='color:#a00'>⚠️ {n}</p>")
             body = "".join(lines)
